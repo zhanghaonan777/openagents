@@ -24,6 +24,7 @@ The first four terminal states cannot transition further.
 
 import logging
 import os
+import time
 from datetime import datetime, timedelta, timezone
 from typing import List, Optional
 
@@ -263,6 +264,9 @@ def reap_stale_tasks(db: Session) -> int:
 # Request models
 # ---------------------------------------------------------------------------
 
+MAX_WAIT_SECONDS = 180
+
+
 class CreateTaskRequest(BaseModel):
     network: str
     source: str                       # delegator, e.g. "openagents:pm" or "human:you@x"
@@ -270,6 +274,8 @@ class CreateTaskRequest(BaseModel):
     text: str                         # the task instruction (becomes the input Message)
     skill_id: Optional[str] = None
     context_id: Optional[str] = None  # channel name to delegate within (enables the kick-off)
+    wait: int = 0                     # >0: block (long-poll) up to N s until the task is terminal,
+                                      # returning the final task + artifact ("agent-as-tool" / A2A blocking)
 
 
 class TaskStatusRequest(BaseModel):
@@ -461,6 +467,16 @@ def create_task(
 
     db.commit()
     db.refresh(task)
+
+    # Blocking ("delegate and wait"): long-poll until the contractor drives the
+    # task to a terminal state, then return it with its result artifact — so the
+    # delegator can synthesize the result into its own answer (agent-as-tool).
+    if body.wait and body.wait > 0:
+        deadline = time.time() + min(body.wait, MAX_WAIT_SECONDS)
+        while time.time() < deadline and task.state not in TERMINAL_STATES:
+            time.sleep(2)
+            db.refresh(task)
+
     return success_response(_serialize_task(task))
 
 
