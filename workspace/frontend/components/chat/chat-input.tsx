@@ -3,7 +3,7 @@
 import * as React from 'react';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
-import { SendHorizontal, Paperclip, X, FileIcon, ImageIcon, Plus, CalendarClock } from 'lucide-react';
+import { SendHorizontal, Paperclip, X, FileIcon, ImageIcon, Plus, CalendarClock, UserPlus } from 'lucide-react';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -13,6 +13,7 @@ import {
 import type { WorkspaceAgent, KnowledgeEntry } from '@/lib/types';
 import { AgentAvatar } from '@/components/agents/agent-avatar';
 import { BookOpen } from 'lucide-react';
+import { useLayout } from '@/components/layout/layout-context';
 
 export interface PendingFile {
   file: File;
@@ -48,6 +49,7 @@ export function ChatInput({ onSend, disabled, className, agents = [], knowledge 
   const textareaRef = React.useRef<HTMLTextAreaElement>(null);
   const fileInputRef = React.useRef<HTMLInputElement>(null);
   const dragCountRef = React.useRef(0);
+  const { openRoleLibrary } = useLayout();
 
   // Sync message state when draft prop changes (thread switch)
   React.useEffect(() => {
@@ -498,6 +500,14 @@ export function ChatInput({ onSend, disabled, className, agents = [], knowledge 
                 </DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>
+            <button
+              onClick={openRoleLibrary}
+              className="inline-flex items-center gap-1.5 h-8 px-2.5 rounded-lg text-[12px] font-medium text-primary hover:bg-primary/10 transition-colors"
+              title="Add a role to this workspace"
+            >
+              <UserPlus className="size-4" />
+              <span>Add role</span>
+            </button>
           </div>
           <Button
             variant={hasContent ? 'primary' : 'secondary'}

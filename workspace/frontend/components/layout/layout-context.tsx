@@ -40,6 +40,13 @@ interface LayoutState {
   /** Whether the browser live preview panel is currently showing */
   showBrowserPreview: boolean;
   setShowBrowserPreview: (v: boolean) => void;
+  /** Role-library modal — opened from the sidebar, chat input, and chat header */
+  isRoleLibraryOpen: boolean;
+  openRoleLibrary: () => void;
+  closeRoleLibrary: () => void;
+  /** Task id to briefly highlight on the board (set when jumping from a chat delegate card) */
+  flashTaskId: string | null;
+  setFlashTaskId: (id: string | null) => void;
 }
 
 const LayoutContext = createContext<LayoutState | undefined>(undefined);
@@ -62,6 +69,11 @@ export function LayoutProvider({ children }: { children: ReactNode }) {
   };
 
   const [showBrowserPreview, setShowBrowserPreview] = useState(false);
+  const [isRoleLibraryOpen, setIsRoleLibraryOpen] = useState(false);
+  const [flashTaskId, setFlashTaskId] = useState<string | null>(null);
+
+  const openRoleLibrary = () => setIsRoleLibraryOpen(true);
+  const closeRoleLibrary = () => setIsRoleLibraryOpen(false);
 
   const isAgentPanelOpen = selectedAgentName !== null;
   const openMobileDetail = () => setMobilePane('detail');
@@ -113,6 +125,11 @@ export function LayoutProvider({ children }: { children: ReactNode }) {
       setSplitBrowser: handleSetSplitBrowser,
       showBrowserPreview,
       setShowBrowserPreview,
+      isRoleLibraryOpen,
+      openRoleLibrary,
+      closeRoleLibrary,
+      flashTaskId,
+      setFlashTaskId,
     }}>
       <div data-slot="layout-wrapper" className="flex grow">
         <TooltipProvider delayDuration={0}>

@@ -19,6 +19,47 @@ import { InboxView } from '@/components/inbox/inbox-view';
 import { KnowledgeView } from '@/components/knowledge/knowledge-view';
 import { useWorkspace } from '@/lib/workspace-context';
 import { EmptyState } from '@/components/chat/empty-state';
+import { RoleLibrary } from '@/components/agents/role-library';
+import type { RoleTemplate } from '@/lib/role-templates';
+import { toast } from 'sonner';
+import { useMemo } from 'react';
+
+/**
+ * Renders the role-library modal once at the shell level. The library is opened
+ * from three entry points (sidebar agents list, chat input, chat header) via the
+ * layout context. Joining a role is a launcher integration point — we surface a
+ * toast describing the `agn create … + connect` step rather than faking the
+ * agent into the live, event-sourced workspace.
+ */
+function RoleLibraryHost() {
+  const { isRoleLibraryOpen, closeRoleLibrary, openRoleLibrary } = useLayout();
+  const { agents } = useWorkspace();
+
+  const joinedNames = useMemo(
+    () => new Set(agents.map((a) => a.agentName.toLowerCase())),
+    [agents],
+  );
+
+  const handleAdd = (role: RoleTemplate) => {
+    closeRoleLibrary();
+    if (joinedNames.has(role.name.toLowerCase())) {
+      toast(`${role.name} is already in this workspace`);
+      return;
+    }
+    toast(`Spinning up ${role.name}…`, {
+      description: `launcher: agn create --type ${role.model} --path roles/${role.id} + connect`,
+    });
+  };
+
+  return (
+    <RoleLibrary
+      open={isRoleLibraryOpen}
+      onOpenChange={(o) => (o ? openRoleLibrary() : closeRoleLibrary())}
+      joinedNames={joinedNames}
+      onAdd={handleAdd}
+    />
+  );
+}
 
 function WorkspaceLoadingScreen() {
   return (
@@ -115,6 +156,7 @@ export function Wrapper() {
             </div>
           )}
         </div>
+        <RoleLibraryHost />
       </div>
     );
   }
@@ -199,6 +241,7 @@ export function Wrapper() {
           )}
         </div>
       </div>
+      <RoleLibraryHost />
     </div>
   );
 }

@@ -34,6 +34,7 @@ CREATE TABLE IF NOT EXISTS workspace_members (
     server_host         text,
     working_dir         text,
     description         text,
+    task_skills         jsonb,
     status              text        DEFAULT 'offline',
     last_heartbeat      timestamptz,
     joined_at           timestamptz NOT NULL DEFAULT now(),
@@ -280,8 +281,31 @@ CREATE TABLE IF NOT EXISTS agents (
 );
 
 -- ===========================================================================
+-- A2A tasks (agent-to-agent structured delegation)
+-- ===========================================================================
+CREATE TABLE IF NOT EXISTS a2a_tasks (
+    id            text        PRIMARY KEY,
+    workspace_id  uuid        NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+    context_id    text,
+    delegator     text        NOT NULL,
+    contractor    text        NOT NULL,
+    skill_id      text,
+    state         text        NOT NULL DEFAULT 'submitted',
+    input         jsonb,
+    artifacts     jsonb,
+    history       jsonb,
+    metadata      jsonb,
+    channel_name  text,
+    created_at    timestamptz NOT NULL DEFAULT now(),
+    updated_at    timestamptz NOT NULL DEFAULT now(),
+    completed_at  timestamptz
+);
+CREATE INDEX IF NOT EXISTS idx_a2a_tasks_ws_contractor_state ON a2a_tasks (workspace_id, contractor, state);
+CREATE INDEX IF NOT EXISTS idx_a2a_tasks_ws_context ON a2a_tasks (workspace_id, context_id);
+
+-- ===========================================================================
 -- Alembic stamp — schema is at head; backend's `alembic upgrade head` no-ops.
--- Update '015' to match the latest revision in
+-- Update '025' to match the latest revision in
 -- workspace/backend/alembic/versions/ when the source schema changes.
 -- ===========================================================================
 CREATE TABLE IF NOT EXISTS alembic_version (
@@ -289,4 +313,4 @@ CREATE TABLE IF NOT EXISTS alembic_version (
     CONSTRAINT alembic_version_pkc PRIMARY KEY (version_num)
 );
 INSERT INTO alembic_version (version_num)
-SELECT '015' WHERE NOT EXISTS (SELECT 1 FROM alembic_version);
+SELECT '025' WHERE NOT EXISTS (SELECT 1 FROM alembic_version);

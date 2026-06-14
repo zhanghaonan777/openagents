@@ -70,7 +70,7 @@ function NavButton({
 // ── Main SidebarContent ──
 
 export function SidebarContent() {
-  const { isSidebarOpen, sidebarToggle, viewMode, setViewMode, setSelectedAgentName } = useLayout();
+  const { isSidebarOpen, sidebarToggle, viewMode, setViewMode, setSelectedAgentName, openRoleLibrary } = useLayout();
   const { agents, sessions, files, browserTabs, createSession, workspace, token, refreshWorkspace, todos, routines, knowledge, currentUser, onlineUsers, unreadNotificationCount } = useWorkspace();
   const { user, isOpenAgentsDomain, signIn, signOut } = useOpenAgentsAuth();
   const { theme, setTheme } = useTheme();
@@ -158,6 +158,17 @@ export function SidebarContent() {
               <TooltipContent side="right">{agent.agentName}</TooltipContent>
             </Tooltip>
           ))}
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                onClick={openRoleLibrary}
+                className="size-7 rounded-lg border border-dashed border-primary/45 text-primary flex items-center justify-center hover:bg-primary/10 transition-colors"
+              >
+                <Plus className="size-3.5" />
+              </button>
+            </TooltipTrigger>
+            <TooltipContent side="right">Add role</TooltipContent>
+          </Tooltip>
         </div>
 
         <div className="px-2.5 py-3 space-y-1">
@@ -238,6 +249,15 @@ export function SidebarContent() {
                   </span>
                 </button>
               ))}
+              <button
+                onClick={openRoleLibrary}
+                className="w-full flex items-center gap-2 px-2 h-8 rounded-lg text-[13px] text-primary hover:bg-primary/10 transition-colors"
+              >
+                <span className="size-5 rounded-md border border-dashed border-primary/45 flex items-center justify-center shrink-0">
+                  <Plus className="size-3" />
+                </span>
+                <span className="text-left">Add role</span>
+              </button>
             </div>
 
             {/* Online Users */}

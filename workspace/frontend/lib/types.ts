@@ -200,6 +200,59 @@ export interface TodoItem {
   updatedAt: string | null;
 }
 
+// ── A2A (agent-to-agent structured delegation) ──
+/** A2A TaskState (wire form). `input-required` is hyphenated per the A2A spec. */
+export type A2ATaskState =
+  | 'submitted'
+  | 'working'
+  | 'input-required'
+  | 'completed'
+  | 'failed'
+  | 'canceled'
+  | 'rejected';
+
+export interface A2AAgentSkill {
+  id: string;
+  name: string;
+  description?: string;
+  tags?: string[];
+  inputModes?: string[];
+  outputModes?: string[];
+}
+
+export interface A2AAgentCard {
+  id: string;
+  name: string;
+  description: string;
+  url: string;
+  skills: A2AAgentSkill[];
+  capabilities: { streaming: boolean; pushNotifications: boolean; extendedAgentCard: boolean };
+}
+
+export interface A2AArtifact {
+  id: string;
+  name?: string;
+  parts: { text?: string; data?: unknown }[];
+}
+
+/** A delegation, served by the backend A2A gateway (/v1/a2a/tasks). */
+export interface A2ATask {
+  id: string;
+  contextId: string | null;
+  state: A2ATaskState;
+  status: { state: A2ATaskState; timestamp: string | null };
+  delegator: string;        // "openagents:agent" | "human:email"
+  contractor: string;       // "openagents:agent"
+  contractorName: string;   // bare contractor name
+  skillId: string | null;
+  channel: string | null;
+  artifacts: A2AArtifact[];
+  history: { role: string; parts: { text?: string }[] }[];
+  createdAt: string | null;
+  updatedAt: string | null;
+  completedAt: string | null;
+}
+
 export interface TimerItem {
   id: string;
   message: string;

@@ -1,0 +1,220 @@
+# -*- coding: utf-8 -*-
+"""Tests for the A2A gateway (agent-to-agent structured delegation)."""
+
+
+def _hdr(ws):
+    return {"X-Workspace-Token": ws["token"]}
+
+
+def _join(client, ws, name):
+    r = client.post("/v1/join", json={
+        "agent_name": name, "network": ws["id"], "token": ws["token"],
+    })
+    assert r.status_code == 200, r.text
+    return r
+
+
+def _delegate(client, ws, contractor="coder", text="Build the login form", channel=None):
+    return client.post("/v1/a2a/tasks", json={
+        "network": ws["id"],
+        "source": "openagents:pm",
+        "contractor": contractor,
+        "text": text,
+        "context_id": channel if channel is not None else ws["channel"]["name"],
+    }, headers=_hdr(ws))
+
+
+# ---------------------------------------------------------------------------
+# Capability discovery — Agent Cards
+# ---------------------------------------------------------------------------
+
+def test_agent_cards_have_a2a_shape(client, workspace):
+    _join(client, workspace, "coder")
+    r = client.get("/v1/a2a/agents", params={"network": workspace["id"]}, headers=_hdr(workspace))
+    assert r.status_code == 200, r.text
+    agents = r.json()["data"]["agents"]
+    card = next(a for a in agents if a["name"] == "coder")
+    assert card["id"] == "openagents:coder"
+    assert card["capabilities"] == {
+        "streaming": False, "pushNotifications": False, "extendedAgentCard": False,
+    }
+    assert card["skills"] == []  # none declared yet
+
+
+def test_single_agent_card(client, workspace):
+    _join(client, workspace, "coder")
+    r = client.get("/v1/a2a/agents/coder/card", params={"network": workspace["id"]}, headers=_hdr(workspace))
+    assert r.status_code == 200, r.text
+    assert r.json()["data"]["name"] == "coder"
+
+    missing = client.get("/v1/a2a/agents/ghost/card", params={"network": workspace["id"]}, headers=_hdr(workspace))
+    assert missing.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Task lifecycle
+# ---------------------------------------------------------------------------
+
+def test_delegate_creates_submitted_task(client, workspace):
+    _join(client, workspace, "pm")
+    _join(client, workspace, "coder")
+    r = _delegate(client, workspace)
+    assert r.status_code == 200, r.text
+    task = r.json()["data"]
+    assert task["state"] == "submitted"
+    assert task["status"]["state"] == "submitted"
+    assert task["contractor"] == "openagents:coder"
+    assert task["delegator"] == "openagents:pm"
+    assert task["history"][0]["parts"][0]["text"] == "Build the login form"
+
+
+def test_todos_bridge_advances_to_working(client, workspace):
+    _join(client, workspace, "pm")
+    _join(client, workspace, "coder")
+    tid = _delegate(client, workspace).json()["data"]["id"]
+
+    # Contractor acts (posts todos) in the task's channel → bridge → working.
+    r = client.put("/v1/todos", json={
+        "network": workspace["id"], "source": "openagents:coder",
+        "channel": workspace["channel"]["name"],
+        "todos": [{"content": "scaffold form", "status": "in_progress"}],
+    }, headers=_hdr(workspace))
+    assert r.status_code == 200, r.text
+
+    got = client.get(f"/v1/a2a/tasks/{tid}", params={"network": workspace["id"]}, headers=_hdr(workspace))
+    assert got.json()["data"]["state"] == "working"
+
+
+def test_explicit_completion_with_artifact(client, workspace):
+    _join(client, workspace, "coder")
+    tid = _delegate(client, workspace).json()["data"]["id"]
+
+    r = client.post(f"/v1/a2a/tasks/{tid}/status", json={
+        "network": workspace["id"], "state": "working", "text": "on it",
+    }, headers=_hdr(workspace))
+    assert r.json()["data"]["state"] == "working"
+
+    r = client.post(f"/v1/a2a/tasks/{tid}/status", json={
+        "network": workspace["id"], "state": "completed",
+        "text": "done", "artifact_text": "PR #42",
+    }, headers=_hdr(workspace))
+    done = r.json()["data"]
+    assert done["state"] == "completed"
+    assert done["completedAt"] is not None
+    assert done["artifacts"][0]["parts"][0]["text"] == "PR #42"
+
+
+def test_illegal_transition_rejected(client, workspace):
+    _join(client, workspace, "coder")
+    tid = _delegate(client, workspace).json()["data"]["id"]
+    client.post(f"/v1/a2a/tasks/{tid}/status", json={"network": workspace["id"], "state": "completed"}, headers=_hdr(workspace))
+
+    # Terminal → no further transitions.
+    r = client.post(f"/v1/a2a/tasks/{tid}/status", json={"network": workspace["id"], "state": "working"}, headers=_hdr(workspace))
+    assert r.status_code == 400
+
+
+def test_unknown_state_rejected(client, workspace):
+    _join(client, workspace, "coder")
+    tid = _delegate(client, workspace).json()["data"]["id"]
+    r = client.post(f"/v1/a2a/tasks/{tid}/status", json={"network": workspace["id"], "state": "bogus"}, headers=_hdr(workspace))
+    assert r.status_code == 400
+
+
+def test_cancel(client, workspace):
+    _join(client, workspace, "coder")
+    tid = _delegate(client, workspace).json()["data"]["id"]
+    r = client.post(f"/v1/a2a/tasks/{tid}/cancel", json={"network": workspace["id"]}, headers=_hdr(workspace))
+    assert r.json()["data"]["state"] == "canceled"
+    assert r.json()["data"]["completedAt"] is not None
+
+
+def test_list_and_filter(client, workspace):
+    _join(client, workspace, "coder")
+    _delegate(client, workspace, text="t0")
+    _delegate(client, workspace, text="t1")
+    r = client.get("/v1/a2a/tasks", params={"network": workspace["id"], "contractor": "coder"}, headers=_hdr(workspace))
+    assert len(r.json()["data"]["tasks"]) == 2
+
+
+def test_auth_required(client, workspace):
+    r = client.get("/v1/a2a/agents", params={"network": workspace["id"]}, headers={"X-Workspace-Token": "wrong"})
+    assert r.status_code == 401
+
+
+# ---------------------------------------------------------------------------
+# Phase 2 — native flow: skill declaration, task.delegated event, auto-complete
+# ---------------------------------------------------------------------------
+
+def test_declare_and_discover_skills(client, workspace):
+    _join(client, workspace, "coder")
+    skills = [{"id": "code-review", "name": "Code Review", "description": "Reviews PRs", "tags": ["quality"]}]
+    r = client.put("/v1/a2a/agents/coder/skills", json={"network": workspace["id"], "skills": skills}, headers=_hdr(workspace))
+    assert r.status_code == 200, r.text
+    assert r.json()["data"]["skills"][0]["id"] == "code-review"
+
+    card = client.get("/v1/a2a/agents/coder/card", params={"network": workspace["id"]}, headers=_hdr(workspace))
+    assert card.json()["data"]["skills"][0]["name"] == "Code Review"
+
+
+def test_task_delegated_event_persisted(client, workspace, db):
+    from sqlalchemy import select
+    from app.models import EventRecord
+
+    _join(client, workspace, "coder")
+    _delegate(client, workspace).json()["data"]["id"]
+
+    rows = db.execute(
+        select(EventRecord).where(EventRecord.type == "workspace.task.delegated")
+    ).scalars().all()
+    assert any(e.target == "openagents:coder" for e in rows)
+
+
+def test_all_todos_done_auto_completes_task(client, workspace):
+    _join(client, workspace, "coder")
+    ch = workspace["channel"]["name"]
+    tid = _delegate(client, workspace).json()["data"]["id"]
+
+    # in_progress todo → working
+    client.put("/v1/todos", json={
+        "network": workspace["id"], "source": "openagents:coder", "channel": ch,
+        "todos": [{"content": "scaffold", "status": "in_progress"}],
+    }, headers=_hdr(workspace))
+    assert client.get(f"/v1/a2a/tasks/{tid}", params={"network": workspace["id"]}, headers=_hdr(workspace)).json()["data"]["state"] == "working"
+
+    # all todos completed → task auto-completes with a result artifact
+    client.put("/v1/todos", json={
+        "network": workspace["id"], "source": "openagents:coder", "channel": ch,
+        "todos": [{"content": "scaffold", "status": "completed"}],
+    }, headers=_hdr(workspace))
+    done = client.get(f"/v1/a2a/tasks/{tid}", params={"network": workspace["id"]}, headers=_hdr(workspace)).json()["data"]
+    assert done["state"] == "completed"
+    assert done["artifacts"] and "scaffold" in done["artifacts"][0]["parts"][0]["text"]
+
+
+def test_input_required_uses_a2a_wire_form(client, workspace):
+    """The flat `state` field must use the hyphenated A2A wire form so the UI
+    board can map it (regression: it previously leaked the snake_case DB value)."""
+    _join(client, workspace, "coder")
+    tid = _delegate(client, workspace).json()["data"]["id"]
+    client.post(f"/v1/a2a/tasks/{tid}/status", json={"network": workspace["id"], "state": "working"}, headers=_hdr(workspace))
+    r = client.post(f"/v1/a2a/tasks/{tid}/status", json={"network": workspace["id"], "state": "input_required"}, headers=_hdr(workspace))
+    data = r.json()["data"]
+    assert data["state"] == "input-required"
+    assert data["status"]["state"] == "input-required"
+
+
+def test_multiple_delegations_in_one_channel_do_not_auto_complete(client, workspace):
+    """With >1 delegation sharing a channel, the single shared todo list can't be
+    attributed to one task, so auto-completion must NOT fire (stays working)."""
+    _join(client, workspace, "coder")
+    ch = workspace["channel"]["name"]
+    t1 = _delegate(client, workspace, text="a").json()["data"]["id"]
+    t2 = _delegate(client, workspace, text="b").json()["data"]["id"]
+    client.put("/v1/todos", json={
+        "network": workspace["id"], "source": "openagents:coder", "channel": ch,
+        "todos": [{"content": "x", "status": "completed"}],
+    }, headers=_hdr(workspace))
+    for tid in (t1, t2):
+        st = client.get(f"/v1/a2a/tasks/{tid}", params={"network": workspace["id"]}, headers=_hdr(workspace)).json()["data"]["state"]
+        assert st == "working"

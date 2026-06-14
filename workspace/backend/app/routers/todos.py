@@ -143,6 +143,11 @@ def put_todos(
     )
     _emit_event_blocking(event, workspace, db, token=x_workspace_token)
 
+    # A2A bridge: the contractor acting (posting todos) in a task's channel
+    # advances any of its `submitted` delegations there to `working`.
+    from app.routers.a2a import advance_tasks_on_contractor_activity
+    advance_tasks_on_contractor_activity(db, str(workspace.id), created_by, channel_name)
+
     db.commit()
     return success_response({"todos": [_serialize_todo(r) for r in records]})
 

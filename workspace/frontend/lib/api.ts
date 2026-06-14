@@ -881,6 +881,68 @@ class WorkspaceApi {
     };
   }
 
+  // ── A2A: agent-to-agent structured delegation ──
+  async listA2AAgentCards(): Promise<{ agents: import('./types').A2AAgentCard[] }> {
+    const params = new URLSearchParams({ network: this.workspaceId });
+    return this.request(`/v1/a2a/agents?${params}`);
+  }
+
+  async listA2ATasks(opts?: { contextId?: string; state?: string; contractor?: string }): Promise<{ tasks: import('./types').A2ATask[] }> {
+    const params = new URLSearchParams({ network: this.workspaceId });
+    if (opts?.contextId) params.set('context_id', opts.contextId);
+    if (opts?.state) params.set('state', opts.state);
+    if (opts?.contractor) params.set('contractor', opts.contractor);
+    return this.request(`/v1/a2a/tasks?${params}`);
+  }
+
+  async createA2ATask(p: {
+    source: string; contractor: string; text: string; contextId?: string; skillId?: string;
+  }): Promise<import('./types').A2ATask> {
+    return this.request(`/v1/a2a/tasks`, {
+      method: 'POST',
+      body: JSON.stringify({
+        network: this.workspaceId,
+        source: p.source,
+        contractor: p.contractor,
+        text: p.text,
+        context_id: p.contextId,
+        skill_id: p.skillId,
+      }),
+    });
+  }
+
+  async updateA2ATaskStatus(
+    taskId: string,
+    p: { state: string; text?: string; artifactText?: string },
+  ): Promise<import('./types').A2ATask> {
+    return this.request(`/v1/a2a/tasks/${taskId}/status`, {
+      method: 'POST',
+      body: JSON.stringify({
+        network: this.workspaceId,
+        state: p.state,
+        text: p.text,
+        artifact_text: p.artifactText,
+      }),
+    });
+  }
+
+  async cancelA2ATask(taskId: string): Promise<import('./types').A2ATask> {
+    return this.request(`/v1/a2a/tasks/${taskId}/cancel`, {
+      method: 'POST',
+      body: JSON.stringify({ network: this.workspaceId }),
+    });
+  }
+
+  async setA2AAgentSkills(
+    agentName: string,
+    skills: import('./types').A2AAgentSkill[],
+  ): Promise<import('./types').A2AAgentCard> {
+    return this.request(`/v1/a2a/agents/${agentName}/skills`, {
+      method: 'PUT',
+      body: JSON.stringify({ network: this.workspaceId, skills }),
+    });
+  }
+
   async listTimers(channel?: string): Promise<{ timers: TimerItem[] }> {
     const params = new URLSearchParams({ network: this.workspaceId });
     if (channel) params.set('channel', channel);

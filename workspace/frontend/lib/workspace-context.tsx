@@ -6,7 +6,7 @@ import { capture } from './analytics';
 import { useOpenAgentsAuth } from './openagents-auth-context';
 import { generateUserId, getStoredIdentity, storeIdentity } from './identity';
 import { networkAgentToWorkspaceAgent, networkChannelToSession } from './types';
-import type { BrowserPersistentContext, BrowserTab, DMConversation, KnowledgeEntry, NotificationItem, OnlineUser, RoutineItem, TodoItem, Workspace, WorkspaceAgent, WorkspaceFile, WorkspaceIdentity, WorkspaceSession } from './types';
+import type { A2ATask, BrowserPersistentContext, BrowserTab, DMConversation, KnowledgeEntry, NotificationItem, OnlineUser, RoutineItem, TodoItem, Workspace, WorkspaceAgent, WorkspaceFile, WorkspaceIdentity, WorkspaceSession } from './types';
 
 function useWorkspaceIdentity() {
   const { user } = useOpenAgentsAuth();
@@ -107,6 +107,11 @@ interface WorkspaceContextValue {
   refreshDMConversations: () => Promise<void>;
   todos: TodoItem[];
   refreshTodos: () => Promise<void>;
+  // A2A — agent-to-agent structured delegation
+  a2aTasks: A2ATask[];
+  refreshA2ATasks: () => Promise<void>;
+  createA2ATask: (contractor: string, text: string, skillId?: string) => Promise<void>;
+  cancelA2ATask: (taskId: string) => Promise<void>;
   routines: RoutineItem[];
   refreshRoutines: () => Promise<void>;
   createRoutine: (params: {
@@ -199,6 +204,7 @@ export function WorkspaceProvider({
   const [browserContexts, setBrowserContexts] = useState<BrowserPersistentContext[]>([]);
   const [dmConversations, setDMConversations] = useState<DMConversation[]>([]);
   const [todos, setTodos] = useState<TodoItem[]>([]);
+  const [a2aTasks, setA2ATasks] = useState<A2ATask[]>([]);
   const [routines, setRoutines] = useState<RoutineItem[]>([]);
   const [knowledge, setKnowledge] = useState<KnowledgeEntry[]>([]);
   const [notifications, setNotifications] = useState<NotificationItem[]>([]);
@@ -628,6 +634,31 @@ export function WorkspaceProvider({
     }
   }, []);
 
+  const refreshA2ATasks = useCallback(async () => {
+    try {
+      const result = await workspaceApi.listA2ATasks();
+      setA2ATasks(result.tasks);
+    } catch {
+      // Non-critical
+    }
+  }, []);
+
+  const createA2ATask = useCallback(async (contractor: string, text: string, skillId?: string) => {
+    await workspaceApi.createA2ATask({
+      source: `human:${currentUser.id}`,
+      contractor,
+      text,
+      skillId,
+      contextId: currentSessionIdRef.current || undefined,
+    });
+    await refreshA2ATasks();
+  }, [currentUser.id, refreshA2ATasks]);
+
+  const cancelA2ATask = useCallback(async (taskId: string) => {
+    await workspaceApi.cancelA2ATask(taskId);
+    await refreshA2ATasks();
+  }, [refreshA2ATasks]);
+
   const refreshRoutines = useCallback(async () => {
     try {
       const result = await workspaceApi.listRoutines();
@@ -824,6 +855,7 @@ export function WorkspaceProvider({
           workspaceApi.listBrowserTabs().then((r) => setBrowserTabs(r.tabs)).catch(() => {}),
           workspaceApi.listBrowserContexts().then((r) => setBrowserContexts(r.contexts)).catch(() => {}),
           workspaceApi.listTodos().then((r) => setTodos(r.todos)).catch(() => {}),
+          workspaceApi.listA2ATasks().then((r) => setA2ATasks(r.tasks)).catch(() => {}),
           workspaceApi.listRoutines().then((r) => setRoutines(r.routines)).catch(() => {}),
           workspaceApi.listKnowledge().then((r) => setKnowledge(r.entries)).catch(() => {}),
           workspaceApi.listNotifications().then((r) => {
@@ -1135,6 +1167,10 @@ export function WorkspaceProvider({
         refreshDMConversations,
         todos,
         refreshTodos,
+        a2aTasks,
+        refreshA2ATasks,
+        createA2ATask,
+        cancelA2ATask,
         routines,
         refreshRoutines,
         createRoutine,

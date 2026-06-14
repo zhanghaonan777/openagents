@@ -24,6 +24,7 @@ import { useLayout } from '@/components/layout/layout-context';
 import { cn } from '@/lib/utils';
 import { AgentAvatar } from '@/components/agents/agent-avatar';
 import { CreateRoutineDialog } from '@/components/routines/create-routine-dialog';
+import { DelegateDialog } from '@/components/agents/delegate-dialog';
 import { eventToMessage } from '@/lib/types';
 import type { WorkspaceMessage } from '@/lib/types';
 
@@ -87,8 +88,9 @@ async function refreshCachedSession(sessionId: string): Promise<void> {
 }
 
 export function ChatView() {
-  const { agents, currentUser, currentSessionId, sessions, updateLastMessage, setSessionActive, agentModes, updateAgentMode, toggleAgentMode, stopAllAgents, activeSessionIds, stoppingSessionIds, renameSession, addParticipant, removeParticipant, consumeSkipFocus, createRoutine, knowledge } = useWorkspace();
+  const { agents, currentUser, currentSessionId, sessions, updateLastMessage, setSessionActive, agentModes, updateAgentMode, toggleAgentMode, stopAllAgents, activeSessionIds, stoppingSessionIds, renameSession, addParticipant, removeParticipant, consumeSkipFocus, createRoutine, knowledge, createA2ATask } = useWorkspace();
   const [showCreateRoutine, setShowCreateRoutine] = useState(false);
+  const [showDelegate, setShowDelegate] = useState(false);
   const {
     isMobile,
     openMobileList,
@@ -97,6 +99,7 @@ export function ChatView() {
     setSplitBrowser,
     showBrowserPreview,
     setShowBrowserPreview,
+    openRoleLibrary,
   } = useLayout();
 
   // Continuously refresh message caches for top recent sessions in the background.
@@ -596,6 +599,29 @@ export function ChatView() {
             </Button>
           )}
 
+          {/* Delegate — create a structured A2A task for an agent.
+              Requires an open thread: the task delegates within this channel so
+              the contractor gets a kick-off and the lifecycle can progress. */}
+          <button
+            onClick={() => setShowDelegate(true)}
+            disabled={!currentSessionId}
+            className="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-lg text-xs font-semibold text-indigo-600 dark:text-indigo-400 border border-indigo-500/35 bg-indigo-500/[0.07] hover:bg-indigo-500/[0.14] transition-colors disabled:opacity-40 disabled:cursor-default disabled:hover:bg-indigo-500/[0.07]"
+            title={currentSessionId ? 'Delegate a task to an agent (A2A)' : 'Open a conversation to delegate'}
+          >
+            <ListTree className="size-3.5" />
+            <span className="hidden lg:inline">Delegate</span>
+          </button>
+
+          {/* Add role — open the role library to spin up a new agent */}
+          <button
+            onClick={openRoleLibrary}
+            className="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-lg text-xs font-semibold text-primary border border-primary/35 bg-primary/[0.07] hover:bg-primary/[0.14] transition-colors"
+            title="Add a role to this workspace"
+          >
+            <UserPlus className="size-3.5" />
+            <span className="hidden lg:inline">Add role</span>
+          </button>
+
           {/* Share conversation */}
           <Button
             variant="ghost"
@@ -737,6 +763,13 @@ export function ChatView() {
             sessionId={currentSessionId}
           />
         )}
+
+        <DelegateDialog
+          open={showDelegate}
+          onOpenChange={setShowDelegate}
+          agents={agents}
+          onDelegate={createA2ATask}
+        />
       </div>
     </div>
   );

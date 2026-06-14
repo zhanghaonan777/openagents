@@ -701,8 +701,11 @@ SKILL_CATALOG: List[dict] = [
     },
 ]
 
-# Keep the workspace-module helpers for backward compatibility with the launcher
-_WORKSPACE_MODULES = {"files", "browser", "tunnel", "todos", "timers", "routines", "knowledge"}
+# Keep the workspace-module helpers for backward compatibility with the launcher.
+# "delegation" exposes the A2A task tools (poll assigned tasks via
+# GET /v1/a2a/tasks?contractor=<me>&state=submitted; report progress via
+# POST /v1/a2a/tasks/{id}/status). The launcher surfaces these as agent tools.
+_WORKSPACE_MODULES = {"files", "browser", "tunnel", "todos", "timers", "routines", "knowledge", "delegation"}
 
 
 def get_catalog() -> List[dict]:

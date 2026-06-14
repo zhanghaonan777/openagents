@@ -105,6 +105,9 @@ class WorkspaceMember(Base):
     working_dir = Column(Text, nullable=True)          # working directory on the server
     description = Column(Text, nullable=True)           # user-provided description of agent's role/capabilities
     enabled_skills = Column(JSONB, nullable=True)      # {"files": true, "browser": false, ...} — null = all defaults
+    # A2A AgentSkill[] this agent advertises for structured delegation:
+    # [{"id","name","description","tags","inputModes","outputModes"}]. Null = none declared.
+    task_skills = Column(JSONB, nullable=True)
     status = Column(Text, default="offline")         # online | offline
     last_heartbeat = Column(DateTime(timezone=True), nullable=True)
     joined_at = Column(DateTime(timezone=True), default=_now, server_default=text("NOW()"))
@@ -557,6 +560,48 @@ class ShareSnapshot(Base):
     __table_args__ = (
         Index("idx_share_snapshots_workspace", "workspace_id"),
         Index("idx_share_snapshots_token", "share_token"),
+    )
+
+
+# ---------------------------------------------------------------------------
+# A2A — agent-to-agent structured delegation (Agent2Agent protocol semantics)
+# ---------------------------------------------------------------------------
+
+class TaskRecord(Base):
+    """An A2A Task — a structured, point-to-point delegation between agents.
+
+    Models the A2A `Task` object (id / contextId / status / history /
+    artifacts) on top of the ONM event bus. A delegation creates one
+    TaskRecord (delegator → contractor) and posts a kick-off message that the
+    contractor's existing runtime acts on; the contractor's activity (todos /
+    explicit status calls) drives the A2A TaskState lifecycle:
+
+        submitted → working → input_required → completed | failed | canceled | rejected
+
+    `completed`, `failed`, `canceled`, `rejected` are terminal (per the A2A
+    spec's TaskState). The protocol surface lives in routers/a2a.py.
+    """
+    __tablename__ = "a2a_tasks"
+
+    id = Column(Text, primary_key=True, default=_uuid)
+    workspace_id = Column(UUID(as_uuid=False), ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False)
+    context_id = Column(Text, nullable=True)              # groups related tasks (e.g. a channel/thread)
+    delegator = Column(Text, nullable=False)              # "openagents:agent" or "human:email"
+    contractor = Column(Text, nullable=False)             # "openagents:agent" executing the task
+    skill_id = Column(Text, nullable=True)                # requested AgentSkill.id
+    state = Column(Text, nullable=False, default="submitted")  # A2A TaskState (snake_case)
+    input = Column(JSONB, nullable=True)                  # A2A Message {role, parts} that initiated the task
+    artifacts = Column(JSONB, default=list)               # [Artifact] outputs
+    history = Column(JSONB, default=list)                 # [Message] status updates
+    task_metadata = Column("metadata", JSONB, default=dict)  # "metadata" is reserved on the declarative class
+    channel_name = Column(Text, nullable=True)            # channel used for the kick-off message + todo bridge
+    created_at = Column(DateTime(timezone=True), default=_now, server_default=text("NOW()"))
+    updated_at = Column(DateTime(timezone=True), default=_now, server_default=text("NOW()"))
+    completed_at = Column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        Index("idx_a2a_tasks_ws_contractor_state", "workspace_id", "contractor", "state"),
+        Index("idx_a2a_tasks_ws_context", "workspace_id", "context_id"),
     )
 
 

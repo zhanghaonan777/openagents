@@ -2,15 +2,63 @@
 
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
-import { Copy, Check, User, FileIcon, Download, Eye } from 'lucide-react';
+import { Copy, Check, User, FileIcon, Download, Eye, ListTodo } from 'lucide-react';
 import { toast } from 'sonner';
 import { memo, useCallback, useMemo, useState } from 'react';
-import type { WorkspaceMessage, WorkspaceAgent } from '@/lib/types';
+import type { WorkspaceMessage, WorkspaceAgent, A2ATask, A2ATaskState } from '@/lib/types';
 import { AgentAvatar } from '@/components/agents/agent-avatar';
 import { MarkdownContent } from './markdown-content';
 import { workspaceApi } from '@/lib/api';
 import { useLayout } from '@/components/layout/layout-context';
 import { useWorkspace } from '@/lib/workspace-context';
+import { colorFromName, roleTemplateByName } from '@/lib/role-templates';
+import { CategoryChip } from '@/components/agents/role-library';
+
+function delegateStatusLabel(s: A2ATaskState): string {
+  if (s === 'working') return 'In Progress';
+  if (s === 'input-required') return 'Review';
+  if (s === 'completed') return 'Done';
+  if (s === 'failed') return 'Failed';
+  if (s === 'canceled') return 'Canceled';
+  if (s === 'rejected') return 'Rejected';
+  return 'To Do';
+}
+
+function delegateStatusClass(s: A2ATaskState): string {
+  if (s === 'working') return 'text-blue-500 font-semibold';
+  if (s === 'completed') return 'text-emerald-500 font-semibold';
+  if (s === 'input-required') return 'text-amber-500 font-semibold';
+  return 'text-muted-foreground font-semibold';
+}
+
+function a2aTaskText(t: A2ATask): string {
+  const hist = t.history || [];
+  const m = hist.find((h) => h.role === 'user' && h.parts?.[0]?.text) || hist.find((h) => h.parts?.[0]?.text);
+  return m?.parts?.[0]?.text || '(task)';
+}
+
+/** A2A task card mounted under a `delegate` chat message — jumps to the board. */
+function DelegateTaskCard({ task, onJump }: { task: A2ATask; onJump: () => void }) {
+  const who = task.contractorName;
+  const c = colorFromName(who);
+  return (
+    <button
+      onClick={onJump}
+      style={{ borderLeftColor: c }}
+      className="flex items-center gap-3 w-full mt-2 p-3 rounded-xl bg-background border border-border border-l-[3px] shadow-xs text-left transition-all hover:-translate-y-px hover:shadow-[0_4px_14px_-6px_rgba(20,20,40,0.14)]"
+    >
+      <ListTodo className="size-[15px] shrink-0" style={{ color: c }} />
+      <div className="flex-1 min-w-0">
+        <div className="text-[12.5px] font-semibold truncate">{a2aTaskText(task)}</div>
+        <div className="text-[11px] text-muted-foreground mt-0.5">
+          A2A task · {who} ·{' '}
+          <span className={delegateStatusClass(task.state)}>{delegateStatusLabel(task.state)}</span>
+        </div>
+      </div>
+      <span className="text-[11.5px] font-semibold text-primary shrink-0">Board →</span>
+    </button>
+  );
+}
 
 interface Attachment {
   fileId: string;
@@ -116,9 +164,12 @@ interface ChatMessageProps {
 }
 
 export const ChatMessage = memo(function ChatMessage({ message, agents = [] }: ChatMessageProps) {
-  const { currentUser } = useWorkspace();
+  const { currentUser, a2aTasks } = useWorkspace();
+  const { setViewMode, setFlashTaskId } = useLayout();
   const isHuman = message.senderType === 'human' || message.senderType === 'user';
   const isSystem = message.messageType === 'status';
+  const isJoin = message.messageType === 'join';
+  const isDelegate = message.messageType === 'delegate';
   const [copied, setCopied] = useState(false);
 
   const agentNames = agents.map((a) => a.agentName);
@@ -144,6 +195,20 @@ export const ChatMessage = memo(function ChatMessage({ message, agents = [] }: C
       toast.error('Failed to copy');
     }
   };
+
+  // ── "X joined the workspace" system line ──
+  if (isJoin) {
+    const role = roleTemplateByName(message.senderName);
+    return (
+      <div className="flex justify-center py-2">
+        <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground bg-muted border border-border rounded-full pl-1.5 pr-3 py-1">
+          <AgentAvatar name={message.senderName} size={18} />
+          <strong className="text-foreground font-semibold">{message.senderName}</strong> joined the workspace
+          {role && <CategoryChip cat={role.cat} />}
+        </span>
+      </div>
+    );
+  }
 
   // Status messages — subtle inline
   if (isSystem) {
@@ -216,6 +281,11 @@ export const ChatMessage = memo(function ChatMessage({ message, agents = [] }: C
                 {agent.role}
               </span>
             )}
+            {isDelegate && (
+              <span className="text-[9.5px] font-bold text-indigo-500 bg-indigo-500/[0.13] px-1.5 py-0.5 rounded-full tracking-wide shrink-0">
+                delegate
+              </span>
+            )}
             {timestamp && (
               <span className="text-xs text-muted-foreground">{timestamp}</span>
             )}
@@ -223,6 +293,18 @@ export const ChatMessage = memo(function ChatMessage({ message, agents = [] }: C
           <div className="text-sm leading-relaxed mt-0.5">
             <MarkdownContent content={message.content} agentNames={agentNames} />
             <Attachments items={attachments} />
+
+            {/* Delegate → linked task card (jumps to the board) */}
+            {isDelegate && (() => {
+              const taskId = message.metadata?.taskId as string | undefined;
+              const task = taskId ? a2aTasks.find((t) => t.id === taskId) : undefined;
+              return task ? (
+                <DelegateTaskCard
+                  task={task}
+                  onJump={() => { setViewMode('tasks'); setFlashTaskId(task.id); }}
+                />
+              ) : null;
+            })()}
 
             {/* Copy button */}
             <div className="flex items-center gap-1 mt-1">

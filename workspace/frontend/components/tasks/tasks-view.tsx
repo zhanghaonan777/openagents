@@ -1,11 +1,13 @@
 'use client';
 
-import { useEffect, useMemo } from 'react';
+import { useEffect } from 'react';
 import { cn } from '@/lib/utils';
-import { ListTodo, CheckCircle2, Circle, Loader2, RefreshCw, XCircle } from 'lucide-react';
+import { ListTodo, RefreshCw } from 'lucide-react';
 import { useWorkspace } from '@/lib/workspace-context';
+import { useLayout } from '@/components/layout/layout-context';
 import { AgentAvatar } from '@/components/agents/agent-avatar';
-import type { TodoItem } from '@/lib/types';
+import { colorFromName } from '@/lib/role-templates';
+import type { A2ATask, A2ATaskState } from '@/lib/types';
 
 function timeAgo(dateStr: string | null): string {
   if (!dateStr) return '';
@@ -19,113 +21,60 @@ function timeAgo(dateStr: string | null): string {
   return `${days}d ago`;
 }
 
-function StatusIcon({ status }: { status: TodoItem['status'] }) {
-  if (status === 'completed') return <CheckCircle2 className="size-4 text-emerald-500 shrink-0" />;
-  if (status === 'in_progress') return <Loader2 className="size-4 text-blue-500 shrink-0 animate-spin" />;
-  if (status === 'cancelled') return <XCircle className="size-4 text-zinc-400 shrink-0" />;
-  return <Circle className="size-4 text-zinc-400 shrink-0" />;
+/** Kanban columns mapped to A2A TaskState. */
+const BOARD_COLS: { id: string; label: string; dot: string; states: A2ATaskState[] }[] = [
+  { id: 'submitted', label: 'To Do', dot: '#a1a1aa', states: ['submitted'] },
+  { id: 'working', label: 'In Progress', dot: '#3b82f6', states: ['working'] },
+  { id: 'review', label: 'Review', dot: '#f59e0b', states: ['input-required'] },
+  { id: 'done', label: 'Done', dot: '#22c55e', states: ['completed', 'failed', 'canceled', 'rejected'] },
+];
+
+function taskText(t: A2ATask): string {
+  const hist = t.history || [];
+  const m = hist.find((h) => h.role === 'user' && h.parts?.[0]?.text) || hist.find((h) => h.parts?.[0]?.text);
+  return m?.parts?.[0]?.text || '(task)';
 }
 
-function StatusSection({
-  title,
-  icon,
-  items,
-  sessions,
-}: {
-  title: string;
-  icon: React.ReactNode;
-  items: TodoItem[];
-  sessions: ReturnType<typeof useWorkspace>['sessions'];
-}) {
-  if (items.length === 0) return null;
-
+function TaskCard({ task, flash, onOpen }: { task: A2ATask; flash: boolean; onOpen: () => void }) {
+  const who = task.contractorName;
+  const railColor = colorFromName(who);
+  const terminal = ['completed', 'failed', 'canceled', 'rejected'].includes(task.state);
+  const failed = task.state === 'failed' || task.state === 'rejected' || task.state === 'canceled';
   return (
-    <div>
-      <div className="flex items-center gap-1.5 mb-2">
-        {icon}
-        <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wider">{title}</h3>
-        <span className="text-xs text-muted-foreground/60">{items.length}</span>
+    <button
+      onClick={onOpen}
+      style={{ borderLeftColor: railColor }}
+      className={cn(
+        'w-full text-left bg-background border border-border border-l-[3px] rounded-lg p-2.5 shadow-xs transition-all hover:-translate-y-0.5 hover:shadow-[0_6px_16px_-8px_rgba(20,20,40,0.16)]',
+        flash && 'ring-2 ring-primary/45',
+      )}
+    >
+      <p className={cn('text-[12.5px] leading-snug text-pretty mb-2.5', terminal && 'text-muted-foreground', failed && 'line-through')}>
+        {taskText(task)}
+      </p>
+      <div className="flex items-center justify-between gap-2">
+        <span className="inline-flex items-center gap-1.5 min-w-0 text-[11px] text-muted-foreground">
+          <AgentAvatar name={who} size={18} />
+          <span className="truncate">{who}</span>
+        </span>
+        <span className="text-[10.5px] font-mono text-muted-foreground/70 shrink-0">
+          {timeAgo(task.updatedAt || task.createdAt)}
+          {failed && task.state !== 'canceled' && ` · ${task.state}`}
+        </span>
       </div>
-      <div className="rounded-lg border border-border bg-card overflow-hidden divide-y divide-border">
-        {items.map((item) => {
-          const agentName = item.createdBy.replace('openagents:', '');
-          const session = sessions.find((s) => s.sessionId === item.channelName);
-          const channelTitle = session?.title || '';
-
-          return (
-            <div key={item.id} className="px-3 py-2 flex items-start gap-2.5">
-              <StatusIcon status={item.status} />
-              <div className="min-w-0 flex-1">
-                <span className={cn(
-                  'text-sm leading-snug',
-                  (item.status === 'completed' || item.status === 'cancelled') && 'line-through text-muted-foreground'
-                )}>
-                  {item.content}
-                </span>
-                {item.status === 'cancelled' && (
-                  <span className="text-[10px] text-muted-foreground/60 ml-1.5">(timed out)</span>
-                )}
-              </div>
-              <div className="flex items-center gap-2 shrink-0 pt-0.5">
-                <AgentAvatar name={agentName} size={16} />
-                {channelTitle && (
-                  <span className="text-[10px] text-muted-foreground max-w-[100px] truncate">{channelTitle}</span>
-                )}
-                <span className="text-[10px] text-muted-foreground">
-                  {timeAgo(item.updatedAt || item.createdAt)}
-                </span>
-              </div>
-            </div>
-          );
-        })}
-      </div>
-    </div>
+    </button>
   );
 }
 
 export function TasksView() {
-  const { todos, refreshTodos, sessions } = useWorkspace();
+  const { a2aTasks, refreshA2ATasks } = useWorkspace();
+  const { flashTaskId, setSelectedAgentName } = useLayout();
 
   useEffect(() => {
-    refreshTodos();
-  }, [refreshTodos]);
+    refreshA2ATasks();
+  }, [refreshA2ATasks]);
 
-  const now = Date.now();
-  const oneDayMs = 24 * 60 * 60 * 1000;
-
-  const { inProgressItems, pendingItems, doneItems } = useMemo(() => {
-    const inProgress = todos
-      .filter((t) => t.status === 'in_progress')
-      .sort((a, b) => {
-        const aTime = a.updatedAt ? new Date(a.updatedAt).getTime() : 0;
-        const bTime = b.updatedAt ? new Date(b.updatedAt).getTime() : 0;
-        return bTime - aTime;
-      });
-
-    const pending = todos
-      .filter((t) => t.status === 'pending')
-      .sort((a, b) => {
-        if (a.position !== b.position) return a.position - b.position;
-        const aTime = a.createdAt ? new Date(a.createdAt).getTime() : 0;
-        const bTime = b.createdAt ? new Date(b.createdAt).getTime() : 0;
-        return aTime - bTime;
-      });
-
-    const done = todos
-      .filter((t) =>
-        (t.status === 'completed' || t.status === 'cancelled') &&
-        t.updatedAt && now - new Date(t.updatedAt).getTime() < oneDayMs
-      )
-      .sort((a, b) => {
-        const aTime = a.updatedAt ? new Date(a.updatedAt).getTime() : 0;
-        const bTime = b.updatedAt ? new Date(b.updatedAt).getTime() : 0;
-        return bTime - aTime;
-      });
-
-    return { inProgressItems: inProgress, pendingItems: pending, doneItems: done };
-  }, [todos, now, oneDayMs]);
-
-  const totalActive = inProgressItems.length + pendingItems.length;
+  const totalActive = a2aTasks.filter((t) => t.state === 'submitted' || t.state === 'working').length;
 
   return (
     <div className="h-full flex flex-col">
@@ -134,54 +83,61 @@ export function TasksView() {
         <div className="flex items-center gap-2">
           <ListTodo className="size-4 text-indigo-500" />
           <h2 className="text-sm font-semibold">Tasks</h2>
-          {totalActive > 0 && (
-            <span className="text-xs text-muted-foreground">
-              {totalActive} active{inProgressItems.length > 0 && ` · ${inProgressItems.length} in progress`}
-            </span>
-          )}
+          <span className="text-xs text-muted-foreground">
+            {totalActive} active · A2A delegations
+          </span>
         </div>
         <button
-          onClick={refreshTodos}
+          onClick={refreshA2ATasks}
           className="p-1.5 rounded-md hover:bg-zinc-100 dark:hover:bg-zinc-800 text-muted-foreground transition-colors"
         >
           <RefreshCw className="size-3.5" />
         </button>
       </div>
 
-      {/* Content */}
-      <div className="flex-1 overflow-y-auto">
-        {todos.length === 0 ? (
-          <div className="flex flex-col items-center justify-center h-full text-muted-foreground gap-2">
-            <ListTodo className="size-8 opacity-30" />
-            <p className="text-sm">No tasks yet</p>
-            <p className="text-xs opacity-60">Agent to-do lists will appear here</p>
-          </div>
-        ) : (
-          <div className="p-4 space-y-6">
-            <StatusSection
-              title="In Progress"
-              icon={<Loader2 className="size-3.5 text-blue-500 animate-spin" />}
-              items={inProgressItems}
-
-              sessions={sessions}
-            />
-            <StatusSection
-              title="Pending"
-              icon={<Circle className="size-3.5 text-zinc-400" />}
-              items={pendingItems}
-
-              sessions={sessions}
-            />
-            <StatusSection
-              title="Completed"
-              icon={<CheckCircle2 className="size-3.5 text-emerald-500" />}
-              items={doneItems}
-
-              sessions={sessions}
-            />
-          </div>
-        )}
-      </div>
+      {/* Board */}
+      {a2aTasks.length === 0 ? (
+        <div className="flex flex-1 flex-col items-center justify-center text-muted-foreground gap-2">
+          <ListTodo className="size-8 opacity-30" />
+          <p className="text-sm">No delegations yet</p>
+          <p className="text-xs opacity-60">Delegate a task to an agent to see it tracked here</p>
+        </div>
+      ) : (
+        <div className="flex-1 min-h-0 grid grid-cols-2 xl:grid-cols-4 gap-3 p-4">
+          {BOARD_COLS.map((col) => {
+            const items = a2aTasks.filter((t) => col.states.includes(t.state));
+            return (
+              <div
+                key={col.id}
+                className="flex flex-col min-h-0 rounded-xl border border-border bg-muted/40 dark:bg-zinc-900/40 p-1.5"
+              >
+                <div className="flex items-center gap-2 px-2 pt-1.5 pb-2">
+                  <span className="size-2 rounded-full" style={{ background: col.dot }} />
+                  <span className="text-xs font-semibold">{col.label}</span>
+                  <span className="ml-auto text-[11px] text-muted-foreground bg-background border border-border rounded-full min-w-5 text-center px-1.5">
+                    {items.length}
+                  </span>
+                </div>
+                <div className="flex-1 min-h-0 overflow-y-auto flex flex-col gap-1.5 px-0.5 pb-1.5">
+                  {items.map((t) => (
+                    <TaskCard
+                      key={t.id}
+                      task={t}
+                      flash={t.id === flashTaskId}
+                      onOpen={() => setSelectedAgentName(t.contractorName)}
+                    />
+                  ))}
+                  {items.length === 0 && (
+                    <div className="text-center text-[11px] text-muted-foreground/70 py-3.5 border border-dashed border-border rounded-lg">
+                      No cards
+                    </div>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }
