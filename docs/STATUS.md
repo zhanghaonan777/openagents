@@ -24,6 +24,15 @@ and [`project-context-and-decisions.md`](./project-context-and-decisions.md).
   launcher-connected agent create/advance real A2A Tasks via `exec`+`curl`,
   with no launcher change (closes the chat↔board gap, **pending a live-agent
   verification pass**).
+- **Conformant A2A protocol surface (inbound)** — `routers/a2a_protocol.py` exposes
+  each workspace agent over the **standard A2A protocol** so external A2A clients
+  (a2a-sdk / ADK / CrewAI[a2a]) can interoperate: an Agent Card at
+  `GET /a2a/{network}/{agent}/.well-known/agent-card.json` + a JSON-RPC 2.0
+  endpoint (`message/send`, `tasks/get`, `tasks/cancel`, `tasks/list`) with the
+  A2A Task/Message/Part/Artifact shapes, TaskState lifecycle, and JSON-RPC error
+  model. Inbound `message/send` bridges to the internal delegation layer.
+  Hand-rolled to the v1.0 spec (no heavy protobuf dep); verified live via raw
+  JSON-RPC + a 4-test conformance suite.
 - **Proven live** — real `claude` agents connected to a local self-hosted
   workspace running this backend, conversed, delegated (via bus), and
   brainstormed. (The "connect agents to a *local* workspace" item from the
@@ -57,8 +66,13 @@ and [`project-context-and-decisions.md`](./project-context-and-decisions.md).
 6. **Frontend tests** — no frontend test setup exists yet (only `tsc` + build).
 
 ### P2
-7. External A2A interop — JSON-RPC 2.0 envelope + `/.well-known/agent-card.json`
-   + SSE `message/stream`, behind a default-deny feature flag.
+7. External A2A interop — **inbound JSON-RPC + `/.well-known/agent-card.json` done**
+   (routers/a2a_protocol.py). Remaining: **outbound client** (our agents calling
+   *external* A2A agents), **SSE `message/stream`** + `tasks/resubscribe`, push
+   notifications, **signed Agent Cards** + richer `securitySchemes`, and the
+   `REJECTED`/`AUTH_REQUIRED` states. (True per-agent peer hosting — each agent
+   running its own A2A server — needs launcher changes; the central backend
+   hosting per-agent A2A endpoints is conformant from a client's perspective.)
 8. `canonical()` idempotency-key versioning + golden tests; Task-tree
    `pending_children` accounting.
 
