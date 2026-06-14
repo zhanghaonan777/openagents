@@ -428,7 +428,13 @@ def create_task(
                 source=body.source,
                 target=f"channel/{body.context_id}",
                 payload={
-                    "content": f"@{contractor_name} {body.text}",
+                    "content": (
+                        f"@{contractor_name} {body.text}\n\n"
+                        f"[A2A delegation · task {task.id}] You are the contractor. Drive this task's "
+                        f"lifecycle with the a2a-delegation skill — mark it `working`, then report the "
+                        f"result via POST /v1/a2a/tasks/{task.id}/status (state=completed, "
+                        f"artifact_text=<result>) or state=failed. Don't just reply in chat."
+                    ),
                     "message_type": "delegate",
                 },
                 metadata={"taskId": task.id},

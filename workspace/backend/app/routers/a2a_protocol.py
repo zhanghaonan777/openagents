@@ -251,7 +251,16 @@ async def jsonrpc(
                 _emit_event_blocking(Event(
                     type="workspace.message.posted", source=delegator,
                     target=f"channel/{context_id}",
-                    payload={"content": f"@{agent_name} {text}", "message_type": "delegate"},
+                    payload={
+                        "content": (
+                            f"@{agent_name} {text}\n\n"
+                            f"[A2A delegation · task {task.id}] You are the contractor. Drive this task's "
+                            f"lifecycle with the a2a-delegation skill — mark it `working`, then report via "
+                            f"POST /v1/a2a/tasks/{task.id}/status (state=completed, artifact_text=<result>) "
+                            f"or state=failed. Don't just reply in chat."
+                        ),
+                        "message_type": "delegate",
+                    },
                     metadata={"taskId": task.id},
                 ), workspace, db, token=x_workspace_token)
             except Exception:
