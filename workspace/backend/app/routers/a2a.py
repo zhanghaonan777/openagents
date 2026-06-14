@@ -23,13 +23,15 @@ The first four terminal states cannot transition further.
 """
 
 import logging
-from datetime import datetime, timezone
+import os
+from datetime import datetime, timedelta, timezone
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, Header, Query
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.exc import StaleDataError
 
 from app.database import get_db
 from app.models import TaskRecord, TodoRecord, WorkspaceMember
@@ -58,6 +60,10 @@ ALLOWED_TRANSITIONS = {
 }
 # snake_case stored internally ↔ hyphenated A2A wire form
 _WIRE_STATE = {"input_required": "input-required"}
+
+# Lease length: a non-terminal task whose deadline passes with no further
+# activity is reaped (working → failed[timeout], input_required → canceled).
+LEASE_SECONDS = int(os.environ.get("A2A_TASK_LEASE_SECONDS", "3600"))
 
 
 def _now() -> datetime:
@@ -209,6 +215,48 @@ def _apply_transition(t: TaskRecord, new_state: str, status_msg: Optional[dict])
         t.history = list(t.history or []) + [status_msg]
     if new_state in TERMINAL_STATES:
         t.completed_at = _now()
+        t.deadline_at = None              # terminal — reaper must never touch it
+    else:
+        t.deadline_at = _now() + timedelta(seconds=LEASE_SECONDS)  # extend the lease
+
+
+def _is_member(db: Session, workspace_id: str, agent_name: str) -> bool:
+    return db.execute(
+        select(WorkspaceMember).where(
+            WorkspaceMember.workspace_id == workspace_id,
+            WorkspaceMember.agent_name == agent_name,
+        )
+    ).scalar_one_or_none() is not None
+
+
+def reap_stale_tasks(db: Session) -> int:
+    """Self-heal: time out non-terminal tasks whose lease has expired.
+
+    working/submitted → failed(timeout); input_required → canceled(no response).
+    Concurrency-safe via the optimistic version lock: a task a worker just
+    advanced raises StaleDataError on commit and is skipped (the worker wins).
+    Called from the backend maintenance loop (app/main.py).
+    """
+    now = _now()
+    rows = db.execute(
+        select(TaskRecord).where(
+            TaskRecord.state.in_(["submitted", "working", "input_required"]),
+            TaskRecord.deadline_at.is_not(None),
+            TaskRecord.deadline_at < now,
+        )
+    ).scalars().all()
+    reaped = 0
+    for t in rows:
+        if t.state == "input_required":
+            _apply_transition(t, "canceled", _message("agent", "No response — lease expired."))
+        else:
+            _apply_transition(t, "failed", _message("agent", "Timed out — lease expired."))
+        try:
+            db.commit()
+            reaped += 1
+        except StaleDataError:
+            db.rollback()   # a worker advanced it first — let them win
+    return reaped
 
 
 # ---------------------------------------------------------------------------
@@ -349,6 +397,11 @@ def create_task(
     contractor_addr = _agent_address(body.contractor)
     contractor_name = _agent_name(contractor_addr)
 
+    # Contractor must be a real member of this workspace — reject ghosts/typos
+    # (a delegation to a non-member could never be picked up).
+    if not _is_member(db, str(workspace.id), contractor_name):
+        return json_response(ResponseCode.BAD_REQUEST, f"Unknown contractor '{contractor_name}'")
+
     task = TaskRecord(
         workspace_id=str(workspace.id),
         context_id=body.context_id,
@@ -361,6 +414,7 @@ def create_task(
         history=[_message("user", body.text)],
         task_metadata={},
         channel_name=body.context_id,
+        deadline_at=_now() + timedelta(seconds=LEASE_SECONDS),
     )
     db.add(task)
     db.flush()
@@ -501,7 +555,11 @@ def update_task_status(
         task.artifacts = list(task.artifacts or []) + [
             {"id": task.id, "name": "result", "parts": [{"text": body.artifact_text}]}
         ]
-    db.commit()
+    try:
+        db.commit()
+    except StaleDataError:
+        db.rollback()
+        return json_response(ResponseCode.CONFLICT, "Task was modified concurrently; retry")
     db.refresh(task)
     return success_response(_serialize_task(task))
 
@@ -527,6 +585,10 @@ def cancel_task(
         return json_response(ResponseCode.BAD_REQUEST, f"Task is already {task.state}")
 
     _apply_transition(task, "canceled", _message("user", "Canceled by delegator."))
-    db.commit()
+    try:
+        db.commit()
+    except StaleDataError:
+        db.rollback()
+        return json_response(ResponseCode.CONFLICT, "Task was modified concurrently; retry")
     db.refresh(task)
     return success_response(_serialize_task(task))

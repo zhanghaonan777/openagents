@@ -595,9 +595,18 @@ class TaskRecord(Base):
     history = Column(JSONB, default=list)                 # [Message] status updates
     task_metadata = Column("metadata", JSONB, default=dict)  # "metadata" is reserved on the declarative class
     channel_name = Column(Text, nullable=True)            # channel used for the kick-off message + todo bridge
+    # Optimistic-lock version: every ORM update CAS-checks + bumps it, so a
+    # reaper timing out a task and a worker completing it can't clobber each
+    # other (the late writer raises StaleDataError instead of a lost update).
+    version = Column(Integer, nullable=False, default=1, server_default="1")
+    # Lease deadline. Each non-terminal transition extends it; the maintenance
+    # reaper times out tasks whose lease expired (no heartbeat).
+    deadline_at = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime(timezone=True), default=_now, server_default=text("NOW()"))
     updated_at = Column(DateTime(timezone=True), default=_now, server_default=text("NOW()"))
     completed_at = Column(DateTime(timezone=True), nullable=True)
+
+    __mapper_args__ = {"version_id_col": version}
 
     __table_args__ = (
         Index("idx_a2a_tasks_ws_contractor_state", "workspace_id", "contractor", "state"),

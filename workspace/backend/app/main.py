@@ -94,6 +94,12 @@ def _run_maintenance():
             logger.info("Auto-archived %d stale thread(s)", len(archived))
 
         db.commit()
+
+        # ── Reap stale A2A delegations (lease expired) ──
+        from app.routers.a2a import reap_stale_tasks
+        reaped = reap_stale_tasks(db)
+        if reaped:
+            logger.info("Reaped %d stale A2A task(s)", reaped)
     finally:
         db.close()
 

@@ -1,6 +1,10 @@
 # -*- coding: utf-8 -*-
 """Tests for the A2A gateway (agent-to-agent structured delegation)."""
 
+from datetime import datetime, timedelta, timezone
+
+import pytest
+
 
 def _hdr(ws):
     return {"X-Workspace-Token": ws["token"]}
@@ -140,6 +144,101 @@ def test_list_and_filter(client, workspace):
 def test_auth_required(client, workspace):
     r = client.get("/v1/a2a/agents", params={"network": workspace["id"]}, headers={"X-Workspace-Token": "wrong"})
     assert r.status_code == 401
+
+
+# ---------------------------------------------------------------------------
+# Hardening — contractor validation, optimistic lock, lease/reaper self-heal
+# ---------------------------------------------------------------------------
+
+def test_unknown_contractor_rejected(client, workspace):
+    # No agent joined → "ghost" is not a member; delegation must be rejected.
+    r = client.post("/v1/a2a/tasks", json={
+        "network": workspace["id"], "source": "openagents:pm",
+        "contractor": "ghost", "text": "x", "context_id": workspace["channel"]["name"],
+    }, headers=_hdr(workspace))
+    assert r.status_code == 400
+
+
+def test_version_increments_on_transition(client, workspace, db):
+    from app.models import TaskRecord
+    _join(client, workspace, "coder")
+    tid = _delegate(client, workspace).json()["data"]["id"]
+    db.expire_all()
+    v0 = db.get(TaskRecord, tid).version
+    client.post(f"/v1/a2a/tasks/{tid}/status", json={"network": workspace["id"], "state": "working"}, headers=_hdr(workspace))
+    db.expire_all()
+    assert db.get(TaskRecord, tid).version > v0
+
+
+def test_optimistic_lock_blocks_concurrent_update(client, workspace, db):
+    """Two writers loading the same task; the late committer must lose (the CAS
+    that prevents a reaper/worker lost-update)."""
+    from sqlalchemy.orm import Session as SASession
+    from sqlalchemy.orm.exc import StaleDataError
+    from app.models import TaskRecord
+    from app.routers.a2a import _apply_transition
+
+    _join(client, workspace, "coder")
+    tid = _delegate(client, workspace).json()["data"]["id"]
+    db.expire_all()
+    other = SASession(bind=db.get_bind())
+    try:
+        ta = db.get(TaskRecord, tid)
+        tb = other.get(TaskRecord, tid)
+        _apply_transition(ta, "working", None)
+        db.commit()                       # winner → version bumps
+        _apply_transition(tb, "working", None)
+        with pytest.raises(StaleDataError):
+            other.commit()                # loser → stale version
+    finally:
+        other.rollback()
+        other.close()
+
+
+def _force_lease_expired(db, task_id):
+    from app.models import TaskRecord
+    db.expire_all()
+    t = db.get(TaskRecord, task_id)
+    t.deadline_at = datetime.now(timezone.utc) - timedelta(seconds=30)
+    db.commit()
+
+
+def test_reaper_times_out_stale_working_task(client, workspace, db):
+    from app.routers.a2a import reap_stale_tasks
+    _join(client, workspace, "coder")
+    tid = _delegate(client, workspace).json()["data"]["id"]
+    client.post(f"/v1/a2a/tasks/{tid}/status", json={"network": workspace["id"], "state": "working"}, headers=_hdr(workspace))
+    _force_lease_expired(db, tid)
+    assert reap_stale_tasks(db) >= 1
+    got = client.get(f"/v1/a2a/tasks/{tid}", params={"network": workspace["id"]}, headers=_hdr(workspace)).json()["data"]
+    assert got["state"] == "failed"
+
+
+def test_reaper_cancels_stale_input_required(client, workspace, db):
+    from app.routers.a2a import reap_stale_tasks
+    _join(client, workspace, "coder")
+    tid = _delegate(client, workspace).json()["data"]["id"]
+    client.post(f"/v1/a2a/tasks/{tid}/status", json={"network": workspace["id"], "state": "working"}, headers=_hdr(workspace))
+    client.post(f"/v1/a2a/tasks/{tid}/status", json={"network": workspace["id"], "state": "input_required"}, headers=_hdr(workspace))
+    _force_lease_expired(db, tid)
+    reap_stale_tasks(db)
+    got = client.get(f"/v1/a2a/tasks/{tid}", params={"network": workspace["id"]}, headers=_hdr(workspace)).json()["data"]
+    assert got["state"] == "canceled"
+
+
+def test_reaper_leaves_fresh_and_terminal_tasks_alone(client, workspace, db):
+    from app.routers.a2a import reap_stale_tasks
+    _join(client, workspace, "coder")
+    # fresh working task (lease in the future) — must not be reaped
+    fresh = _delegate(client, workspace, text="fresh").json()["data"]["id"]
+    client.post(f"/v1/a2a/tasks/{fresh}/status", json={"network": workspace["id"], "state": "working"}, headers=_hdr(workspace))
+    # completed task with a (cleared) lease — must not be reaped
+    done = _delegate(client, workspace, text="done").json()["data"]["id"]
+    client.post(f"/v1/a2a/tasks/{done}/status", json={"network": workspace["id"], "state": "completed"}, headers=_hdr(workspace))
+    reap_stale_tasks(db)
+    g = lambda tid: client.get(f"/v1/a2a/tasks/{tid}", params={"network": workspace["id"]}, headers=_hdr(workspace)).json()["data"]["state"]
+    assert g(fresh) == "working"
+    assert g(done) == "completed"
 
 
 # ---------------------------------------------------------------------------

@@ -296,6 +296,8 @@ CREATE TABLE IF NOT EXISTS a2a_tasks (
     history       jsonb,
     metadata      jsonb,
     channel_name  text,
+    version       integer     NOT NULL DEFAULT 1,
+    deadline_at   timestamptz,
     created_at    timestamptz NOT NULL DEFAULT now(),
     updated_at    timestamptz NOT NULL DEFAULT now(),
     completed_at  timestamptz
@@ -313,4 +315,4 @@ CREATE TABLE IF NOT EXISTS alembic_version (
     CONSTRAINT alembic_version_pkc PRIMARY KEY (version_num)
 );
 INSERT INTO alembic_version (version_num)
-SELECT '025' WHERE NOT EXISTS (SELECT 1 FROM alembic_version);
+SELECT '026' WHERE NOT EXISTS (SELECT 1 FROM alembic_version);
