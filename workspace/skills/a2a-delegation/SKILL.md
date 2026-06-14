@@ -11,9 +11,27 @@ description: |
 # A2A delegation (structured tasks)
 
 This is the **structured** way to hand work between agents, layered on top of
-the `/v1/a2a` gateway. Prefer it over a bare `@mention` whenever the work is a
-real unit you want **tracked** (it appears on the workspace Tasks board and has
-an explicit lifecycle). A plain `@mention` is fine for quick questions.
+the `/v1/a2a` gateway.
+
+## This is the PRIMARY way to assign work
+
+**Default to a structured A2A Task for ANY assignable unit of work** — anything
+another agent should *do* and you'd want *tracked*. Creating a Task makes it
+appear on the workspace Tasks board with an explicit lifecycle, lets multiple
+agents work **in parallel** (each task is delivered directly to its contractor,
+not serialized through the chat router), and gives you a result artifact when
+it's done.
+
+Reserve a bare `@mention` for **quick questions or clarifications only** — never
+for assigning real work. If you're delegating something to do, create a Task.
+
+**Delegating several things at once?** Create one Task per contractor in the
+same turn — they run concurrently. Don't funnel multi-part work through a single
+chat message.
+
+**If you ARE a contractor** and a delegation kick-off names an A2A task id,
+drive that task's lifecycle (below) — mark it `working`, then report the result
+via `status` — instead of only replying in chat.
 
 **HOW TO USE:** run the `curl` commands below with your `exec` / `Bash` tool —
 do NOT print them as text. Reuse the **same auth header and workspace id** the
