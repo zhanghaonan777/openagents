@@ -9,6 +9,8 @@ import {
   ROLE_TEMPLATES,
   ROLE_CATEGORIES,
   ROLE_MODELS,
+  RUNTIMES,
+  runtimeById,
   type RoleTemplate,
 } from '@/lib/role-templates';
 
@@ -46,9 +48,14 @@ function RoleCard({
 }: {
   role: RoleTemplate;
   joined: boolean;
-  onAdd: () => void;
+  onAdd: (runtime: string) => void;
 }) {
   const [open, setOpen] = useState(false);
+  // A role's persona is runtime-agnostic — the runtime is chosen here, at add time.
+  const [runtime, setRuntime] = useState(
+    RUNTIMES.some((r) => r.id === role.model) ? role.model : 'claude',
+  );
+  const rt = runtimeById(runtime);
   const shownSkills = open ? role.skills : role.skills.slice(0, 4);
   return (
     <div
@@ -64,7 +71,30 @@ function RoleCard({
             <h3 className="text-[15px] font-bold tracking-tight truncate">{role.name}</h3>
             <CategoryChip cat={role.cat} />
           </div>
-          <ModelBadge model={role.model} />
+          {/* Runtime is a choice, not a fixed property of the role. */}
+          <div className="flex items-center gap-1.5">
+            <span className="text-[10px] text-muted-foreground">runs on</span>
+            <div
+              className="inline-flex items-center gap-1 bg-muted border border-border rounded-[5px] pl-1.5 pr-1 py-0.5"
+              title={rt ? `${rt.hint}${rt.personaFidelity === 'full' ? ' · full persona' : ' · persona varies by runtime'}` : ''}
+            >
+              <span className="size-1.5 rounded-[2px]" style={{ background: rt?.tint }} />
+              <select
+                value={runtime}
+                onChange={(e) => setRuntime(e.target.value)}
+                className="text-[10.5px] font-mono bg-transparent text-muted-foreground outline-none cursor-pointer"
+              >
+                {RUNTIMES.map((r) => (
+                  <option key={r.id} value={r.id}>{r.label}</option>
+                ))}
+              </select>
+            </div>
+            {rt?.personaFidelity === 'partial' && (
+              <span className="text-[9.5px] text-amber-600 dark:text-amber-400" title="This runtime may not inject the role's full persona (CLAUDE.md) — Claude does.">
+                persona varies
+              </span>
+            )}
+          </div>
         </div>
       </div>
 
@@ -111,7 +141,7 @@ function RoleCard({
         </button>
         <button
           type="button"
-          onClick={onAdd}
+          onClick={() => onAdd(runtime)}
           disabled={joined}
           className={cn(
             'text-[12.5px] font-semibold rounded-lg px-3 py-1.5 transition-colors',
@@ -136,7 +166,7 @@ export function RoleLibrary({
   open: boolean;
   onOpenChange: (open: boolean) => void;
   joinedNames: Set<string>;
-  onAdd: (role: RoleTemplate) => void;
+  onAdd: (role: RoleTemplate, runtime: string) => void;
 }) {
   const [q, setQ] = useState('');
   const [cat, setCat] = useState('all');
@@ -202,7 +232,7 @@ export function RoleLibrary({
               key={r.id}
               role={r}
               joined={joinedNames.has(r.name.toLowerCase())}
-              onAdd={() => onAdd(r)}
+              onAdd={(runtime) => onAdd(r, runtime)}
             />
           ))}
           {filtered.length === 0 && (

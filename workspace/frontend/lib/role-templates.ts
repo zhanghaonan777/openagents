@@ -60,6 +60,34 @@ export const ROLE_MODELS: Record<string, RoleModel> = {
   gemini: { id: 'gemini', label: 'Gemini 2.5', short: 'gemini', tint: '#4285F4' },
 };
 
+// A role's persona (its CLAUDE.md) is runtime-agnostic — the same role can run
+// on any launcher runtime; the runtime is chosen when the role is added.
+// `personaFidelity: 'full'` = the runtime injects the role's CLAUDE.md as-is
+// (Claude Code reads it from the working dir). For others it depends on the
+// launcher adapter; openclaw, for instance, doesn't inject CLAUDE.md today.
+export interface AgentRuntime {
+  id: string;
+  label: string;
+  hint: string;
+  tint: string;
+  personaFidelity: 'full' | 'partial';
+}
+
+export const RUNTIMES: AgentRuntime[] = [
+  { id: 'claude', label: 'Claude', hint: 'Claude Code login · no API key', tint: '#D97757', personaFidelity: 'full' },
+  { id: 'openclaw', label: 'OpenClaw', hint: 'Local MiniMax', tint: '#FF6B5A', personaFidelity: 'partial' },
+  { id: 'codex', label: 'Codex', hint: 'GPT', tint: '#10A37F', personaFidelity: 'partial' },
+  { id: 'gemini', label: 'Gemini', hint: 'Google', tint: '#4285F4', personaFidelity: 'partial' },
+  { id: 'opencode', label: 'OpenCode', hint: 'Open-source coding agent', tint: '#8B5CF6', personaFidelity: 'partial' },
+  { id: 'cursor', label: 'Cursor', hint: 'Cursor agent', tint: '#6366F1', personaFidelity: 'partial' },
+  { id: 'kimi', label: 'Kimi', hint: 'Moonshot', tint: '#06B6D4', personaFidelity: 'partial' },
+  { id: 'hermes', label: 'Hermes', hint: '', tint: '#10B981', personaFidelity: 'partial' },
+];
+
+export function runtimeById(id: string): AgentRuntime | undefined {
+  return RUNTIMES.find((r) => r.id === id);
+}
+
 const TEMPLATES_BY_NAME = new Map(ROLE_TEMPLATES.map((r) => [r.name.toLowerCase(), r]));
 
 /** Look up a role template by an agent's display name (case-insensitive). */

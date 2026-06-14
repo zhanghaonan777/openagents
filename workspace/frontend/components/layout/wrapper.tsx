@@ -40,14 +40,14 @@ function RoleLibraryHost() {
     [agents],
   );
 
-  const handleAdd = (role: RoleTemplate) => {
+  const handleAdd = (role: RoleTemplate, runtime: string) => {
     closeRoleLibrary();
     if (joinedNames.has(role.name.toLowerCase())) {
       toast(`${role.name} is already in this workspace`);
       return;
     }
-    toast(`Spinning up ${role.name}…`, {
-      description: `launcher: agn create --type ${role.model} --path roles/${role.id} + connect`,
+    toast(`Spinning up ${role.name} on ${runtime}…`, {
+      description: `launcher: agn create --type ${runtime} --path roles/${role.id} + connect`,
     });
   };
 
