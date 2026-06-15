@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { X, Copy, Check, Plus, Globe, Folder, Monitor, UserRoundCog, Cloud, Trash2, KeyRound, RefreshCw, Sparkles, ExternalLink, Hash, ListTodo, MessageSquare, Brain, Terminal, Send } from 'lucide-react';
+import { X, Copy, Check, Plus, Globe, Folder, Monitor, UserRoundCog, Cloud, Trash2, KeyRound, RefreshCw, Sparkles, ExternalLink, Hash, ListTodo, MessageSquare, Brain, Terminal, Send, ChevronRight } from 'lucide-react';
 import { useLayout } from '@/components/layout/layout-context';
 import { useWorkspace } from '@/lib/workspace-context';
 import { AgentAvatar } from '@/components/agents/agent-avatar';
@@ -66,8 +66,8 @@ function taskStatusMeta(s: A2ATaskState): { label: string; cls: string; dot: str
 }
 
 export function AgentProfilePanel() {
-  const { selectedAgentName, setSelectedAgentName, setViewMode, setFlashTaskId } = useLayout();
-  const { agents, refreshWorkspace, createSession, a2aTasks } = useWorkspace();
+  const { selectedAgentName, setSelectedAgentName, setViewMode, setFlashTaskId, openMobileDetail } = useLayout();
+  const { agents, refreshWorkspace, createSession, a2aTasks, setCurrentSessionId } = useWorkspace();
   const { isCopied, copyToClipboard } = useCopyToClipboard();
 
   const agent = agents.find((a) => a.agentName === selectedAgentName);
@@ -111,6 +111,15 @@ export function AgentProfilePanel() {
     setViewMode('tasks');
     setFlashTaskId(taskId);
   }, [setSelectedAgentName, setViewMode, setFlashTaskId]);
+
+  // Jump into the Claude Code session (thread/channel) an activity entry belongs to.
+  const openSession = useCallback((sessionId: string) => {
+    if (!sessionId) return;
+    setSelectedAgentName(null);
+    setViewMode('threads');
+    setCurrentSessionId(sessionId);
+    openMobileDetail();
+  }, [setSelectedAgentName, setViewMode, setCurrentSessionId, openMobileDetail]);
 
   // Cloud agent config
   const [cloudConfig, setCloudConfig] = useState<CloudAgentConfig | null>(null);
@@ -339,7 +348,15 @@ export function AgentProfilePanel() {
                       // Hide internal A2A kick-off plumbing, same as the chat view.
                       const text = (m.content || '').split(/\n*\[A2A delegation/)[0].trim();
                       return (
-                        <div key={m.messageId} className="px-4 py-2.5">
+                        <div
+                          key={m.messageId}
+                          role="button"
+                          tabIndex={0}
+                          onClick={() => openSession(m.sessionId || '')}
+                          onKeyDown={(e) => { if (e.key === 'Enter') openSession(m.sessionId || ''); }}
+                          title={m.sessionId ? 'Open this session' : undefined}
+                          className="group px-4 py-2.5 cursor-pointer hover:bg-muted/40 transition-colors"
+                        >
                           <div className="flex items-center gap-2 mb-1">
                             <span className={cn('inline-flex items-center gap-1 text-[10px] font-semibold px-1.5 py-0.5 rounded', k.chip)}>
                               <Icon className="size-2.5" />
@@ -352,13 +369,14 @@ export function AgentProfilePanel() {
                               </span>
                             )}
                             <span className="ml-auto text-[10px] font-mono text-muted-foreground/70 shrink-0">{timeAgo(m.createdAt)}</span>
+                            <ChevronRight className="size-3 shrink-0 -mr-1 text-transparent group-hover:text-muted-foreground/60 transition-colors" />
                           </div>
                           {k.key === 'tool' ? (
                             <p className="text-[11.5px] font-mono text-foreground/75 bg-muted/50 border border-border/50 rounded px-2 py-1 whitespace-pre-wrap break-all line-clamp-4">{k.detail}</p>
                           ) : k.key === 'thinking' ? (
                             <p className="text-[12.5px] italic leading-snug text-muted-foreground whitespace-pre-wrap line-clamp-6">{text}</p>
                           ) : (
-                            <div className="text-[13px] leading-relaxed text-foreground/90 break-words">
+                            <div className="text-[13px] leading-relaxed text-foreground/90 break-words" onClick={(e) => e.stopPropagation()}>
                               <MarkdownContent content={text || '…'} agentNames={agentNames} />
                             </div>
                           )}
