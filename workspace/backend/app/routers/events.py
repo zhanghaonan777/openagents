@@ -269,6 +269,7 @@ def poll_events(
     after: Optional[str] = Query(None, description="Return events after this event ID"),
     before: Optional[str] = Query(None, description="Return events before this event ID"),
     target: Optional[str] = Query(None, description="Filter by target address"),
+    source: Optional[str] = Query(None, description="Filter by source address (e.g. an agent's emitted events)"),
     channel: Optional[str] = Query(None, description="Filter by channel name"),
     type: Optional[str] = Query(None, description="Filter by event type prefix"),
     conversation: Optional[str] = Query(None, description="Filter to DM conversation between two agents (comma-separated addresses)"),
@@ -320,7 +321,7 @@ def poll_events(
     incoming_after = after or ""
     if not search and not member:
         key_parts = [
-            str(workspace.id), target or "", channel or "",
+            str(workspace.id), target or "", source or "", channel or "",
             type or "", conversation or "",
             after or "", before or "",
             sort or "asc", str(limit),
@@ -332,7 +333,7 @@ def poll_events(
         # Per-filter head cursor marker (what the newest event id was for
         # this filter the last time we saw any events). Cursor-free.
         filter_parts = [
-            str(workspace.id), target or "", channel or "",
+            str(workspace.id), target or "", source or "", channel or "",
             type or "", conversation or "",
             sort or "asc", str(limit),
         ]
@@ -426,6 +427,9 @@ def poll_events(
 
     if target:
         query = query.where(EventRecord.target == target)
+
+    if source:
+        query = query.where(EventRecord.source == source)
 
     if channel:
         query = query.where(EventRecord.target == f"channel/{channel}")

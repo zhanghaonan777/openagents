@@ -1,24 +1,116 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
-import { X, Copy, Check, Plus, Globe, Folder, Monitor, UserRoundCog, Cloud, Trash2, KeyRound, RefreshCw, Sparkles, ExternalLink } from 'lucide-react';
+import { useState, useEffect, useCallback, useRef } from 'react';
+import { X, Copy, Check, Plus, Globe, Folder, Monitor, UserRoundCog, Cloud, Trash2, KeyRound, RefreshCw, Sparkles, ExternalLink, Hash, ListTodo, MessageSquare, Brain, Terminal, Send } from 'lucide-react';
 import { useLayout } from '@/components/layout/layout-context';
 import { useWorkspace } from '@/lib/workspace-context';
 import { AgentAvatar } from '@/components/agents/agent-avatar';
+import { MarkdownContent } from '@/components/chat/markdown-content';
 import { useCopyToClipboard } from '@/hooks/use-copy-to-clipboard';
 import { workspaceApi } from '@/lib/api';
 import { cn } from '@/lib/utils';
 import { toast } from 'sonner';
-import type { CloudAgentConfig } from '@/lib/types';
+import type { CloudAgentConfig, A2ATask, A2ATaskState, WorkspaceMessage } from '@/lib/types';
+
+function timeAgo(dateStr: string | null): string {
+  if (!dateStr) return '';
+  const diff = Date.now() - new Date(dateStr).getTime();
+  const mins = Math.floor(diff / 60000);
+  if (mins < 1) return 'just now';
+  if (mins < 60) return `${mins}m ago`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  return `${days}d ago`;
+}
+
+function taskRequestText(t: A2ATask): string {
+  const hist = t.history || [];
+  const m = hist.find((h) => h.role === 'user' && h.parts?.[0]?.text) || hist.find((h) => h.parts?.[0]?.text);
+  return m?.parts?.[0]?.text || '(task)';
+}
+
+function taskArtifactText(t: A2ATask): string {
+  return (t.artifacts || [])
+    .flatMap((a) => (a.parts || []).map((p) => p.text || ''))
+    .join('\n')
+    .trim();
+}
+
+/** Classify one session event into a typed, labelled timeline entry. */
+type ActivityKey = 'tool' | 'thinking' | 'delegate' | 'message';
+function activityKind(m: WorkspaceMessage): { key: ActivityKey; label: string; chip: string; detail: string } {
+  const content = m.content || '';
+  if (m.messageType === 'thinking') {
+    return { key: 'thinking', label: 'Thinking', chip: 'text-violet-700 bg-violet-500/12 dark:text-violet-300', detail: content };
+  }
+  if (m.messageType === 'delegate') {
+    return { key: 'delegate', label: 'Delegate', chip: 'text-indigo-700 bg-indigo-500/12 dark:text-indigo-300', detail: content };
+  }
+  if (m.messageType === 'status') {
+    // Claude Code tool calls arrive as status lines like "Bash › <cmd>" / "Write › <path>".
+    const i = content.indexOf('›');
+    const tool = i > 0 ? content.slice(0, i).trim() : 'Tool';
+    return { key: 'tool', label: tool || 'Tool', chip: 'text-amber-700 bg-amber-500/14 dark:text-amber-300', detail: i > 0 ? content.slice(i + 1).trim() : content };
+  }
+  return { key: 'message', label: 'Message', chip: 'text-sky-700 bg-sky-500/12 dark:text-sky-300', detail: content };
+}
+
+function taskStatusMeta(s: A2ATaskState): { label: string; cls: string; dot: string } {
+  if (s === 'working') return { label: 'In Progress', cls: 'text-blue-600 dark:text-blue-400', dot: '#3b82f6' };
+  if (s === 'input-required') return { label: 'Review', cls: 'text-amber-600 dark:text-amber-400', dot: '#f59e0b' };
+  if (s === 'completed') return { label: 'Done', cls: 'text-emerald-600 dark:text-emerald-400', dot: '#22c55e' };
+  if (s === 'failed' || s === 'rejected') return { label: s === 'failed' ? 'Failed' : 'Rejected', cls: 'text-red-600 dark:text-red-400', dot: '#ef4444' };
+  if (s === 'canceled') return { label: 'Canceled', cls: 'text-muted-foreground', dot: '#a1a1aa' };
+  return { label: 'To Do', cls: 'text-muted-foreground', dot: '#a1a1aa' };
+}
 
 export function AgentProfilePanel() {
-  const { selectedAgentName, setSelectedAgentName, isMobile, setViewMode } = useLayout();
-  const { agents, refreshWorkspace, createSession } = useWorkspace();
+  const { selectedAgentName, setSelectedAgentName, setViewMode, setFlashTaskId } = useLayout();
+  const { agents, refreshWorkspace, createSession, a2aTasks } = useWorkspace();
   const { isCopied, copyToClipboard } = useCopyToClipboard();
 
   const agent = agents.find((a) => a.agentName === selectedAgentName);
 
   const isCloud = agent?.agentType?.startsWith('cloud:') ?? false;
+
+  // ── History: which view + the agent's own recent messages ──
+  const [tab, setTab] = useState<'tasks' | 'activity' | 'profile'>('activity');
+  const [activity, setActivity] = useState<WorkspaceMessage[]>([]);
+  const [activityLoading, setActivityLoading] = useState(false);
+
+  useEffect(() => {
+    setTab('activity');
+    if (!selectedAgentName) { setActivity([]); return; }
+    let alive = true;
+    setActivityLoading(true);
+    workspaceApi.getAgentActivity(selectedAgentName)
+      .then((r) => { if (alive) setActivity(r.messages); })
+      .catch(() => { if (alive) setActivity([]); })
+      .finally(() => { if (alive) setActivityLoading(false); });
+    return () => { alive = false; };
+  }, [selectedAgentName]);
+
+  // Auto-scroll the session timeline to the latest entry (it reads oldest → newest).
+  const activityEndRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (tab === 'activity') activityEndRef.current?.scrollIntoView({ block: 'end' });
+  }, [tab, activity]);
+
+  const agentNames = agents.map((a) => a.agentName);
+
+  // The agent's A2A tasks (it as the contractor) — its tracked work log.
+  const agentTasks = agent
+    ? a2aTasks
+        .filter((t) => t.contractorName === agent.agentName)
+        .sort((a, b) => new Date(b.updatedAt || b.createdAt || 0).getTime() - new Date(a.updatedAt || a.createdAt || 0).getTime())
+    : [];
+
+  const jumpToTask = useCallback((taskId: string) => {
+    setSelectedAgentName(null);
+    setViewMode('tasks');
+    setFlashTaskId(taskId);
+  }, [setSelectedAgentName, setViewMode, setFlashTaskId]);
 
   // Cloud agent config
   const [cloudConfig, setCloudConfig] = useState<CloudAgentConfig | null>(null);
@@ -127,50 +219,161 @@ export function AgentProfilePanel() {
       ];
 
   return (
-    <>
-      {/* Backdrop */}
-      <div
-        className="absolute inset-0 bg-black/10 z-10"
-        onClick={() => setSelectedAgentName(null)}
-      />
-
-      {/* Panel — full-width on mobile, 320px sidebar on desktop */}
-      <div className={cn(
-        'absolute top-0 right-0 bottom-0 bg-background border-l shadow-xl z-20 flex flex-col animate-in slide-in-from-right duration-200',
-        isMobile ? 'left-0 w-full' : 'w-[320px]'
-      )}>
-        {/* Close button */}
-        <div className="flex items-center justify-end px-3 pt-3">
+    // Docked panel — fills the chat pane, exactly the same size as the conversation
+    <div className="absolute inset-0 z-20 bg-background flex flex-col animate-in fade-in duration-150">
+        {/* Header */}
+        <div className="flex items-center gap-3 px-5 py-3.5 border-b shrink-0">
+          <AgentAvatar name={agent.agentName} size={40} status={agent.status} showStatus />
+          <div className="flex-1 min-w-0">
+            <h3 className="text-[15px] font-semibold leading-tight truncate">{agent.agentName}</h3>
+            <div className="flex items-center gap-1.5 mt-1">
+              <span className={cn(
+                'inline-flex items-center gap-1 text-[11px] px-1.5 py-px rounded font-medium',
+                isOnline ? 'bg-green-50 text-green-700 dark:bg-green-900/30 dark:text-green-400' : 'bg-zinc-100 text-zinc-500 dark:bg-zinc-800 dark:text-zinc-400'
+              )}>
+                <span className={cn('size-1.5 rounded-full', isOnline ? 'bg-green-500' : 'bg-zinc-400')} />
+                {agent.status}
+              </span>
+            </div>
+          </div>
           <button
             onClick={() => setSelectedAgentName(null)}
-            className="size-7 flex items-center justify-center rounded-md hover:bg-zinc-200/60 dark:hover:bg-zinc-800 text-muted-foreground transition-colors"
+            className="size-7 flex items-center justify-center rounded-md hover:bg-zinc-200/60 dark:hover:bg-zinc-800 text-muted-foreground transition-colors shrink-0"
             title="Close"
           >
             <X className="size-4" />
           </button>
         </div>
 
-        {/* Profile header */}
-        <div className="px-5 pb-4">
-          <div className="flex items-center gap-3">
-            <AgentAvatar name={agent.agentName} size={40} status={agent.status} showStatus />
-            <div className="flex-1 min-w-0">
-              <h3 className="text-[15px] font-semibold leading-tight truncate">{agent.agentName}</h3>
-              <div className="flex items-center gap-1.5 mt-1">
-                <span className={cn(
-                  'inline-flex items-center gap-1 text-[11px] px-1.5 py-px rounded font-medium',
-                  isOnline ? 'bg-green-50 text-green-700 dark:bg-green-900/30 dark:text-green-400' : 'bg-zinc-100 text-zinc-500 dark:bg-zinc-800 dark:text-zinc-400'
-                )}>
-                  <span className={cn('size-1.5 rounded-full', isOnline ? 'bg-green-500' : 'bg-zinc-400')} />
-                  {agent.status}
-                </span>
-              </div>
-            </div>
-          </div>
+        {/* Tabs — Tasks / Activity / Profile, switch within the panel */}
+        <div className="px-5 flex items-center gap-1 border-b shrink-0">
+          {([['tasks', 'Tasks'], ['activity', 'Activity'], ['profile', 'Profile']] as const).map(([id, label]) => (
+            <button
+              key={id}
+              onClick={() => setTab(id)}
+              className={cn(
+                'relative px-2.5 py-2 text-xs font-medium transition-colors',
+                tab === id ? 'text-foreground' : 'text-muted-foreground hover:text-foreground',
+              )}
+            >
+              {label}
+              {id === 'tasks' && agentTasks.length > 0 && (
+                <span className="ml-1 text-[10px] text-muted-foreground">{agentTasks.length}</span>
+              )}
+              {tab === id && <span className="absolute inset-x-2 -bottom-px h-0.5 rounded-full bg-foreground" />}
+            </button>
+          ))}
         </div>
 
-        {/* Scrollable content */}
-        <div className="flex-1 overflow-y-auto px-3.5 space-y-3">
+        {/* Body */}
+        <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
+          {/* Tasks — this agent as contractor */}
+          {tab === 'tasks' && (
+            <div className="flex-1 overflow-y-auto">
+              {agentTasks.length === 0 ? (
+                <div className="flex flex-col items-center justify-center h-full gap-2 text-muted-foreground">
+                  <ListTodo className="size-7 opacity-30" />
+                  <p className="text-xs">No delegated tasks yet</p>
+                </div>
+              ) : (
+                <div className="divide-y">
+                  {agentTasks.map((t) => {
+                    const meta = taskStatusMeta(t.state);
+                    const art = taskArtifactText(t);
+                    return (
+                      <button
+                        key={t.id}
+                        onClick={() => jumpToTask(t.id)}
+                        className="w-full text-left px-4 py-3 hover:bg-muted/50 transition-colors"
+                      >
+                        <div className="flex items-start gap-2">
+                          <span className="mt-1 size-1.5 rounded-full shrink-0" style={{ background: meta.dot }} />
+                          <div className="flex-1 min-w-0">
+                            <p className="text-[13px] leading-snug text-pretty line-clamp-2">{taskRequestText(t)}</p>
+                            {art && (
+                              <p className="mt-1.5 text-[11.5px] leading-snug text-foreground/70 bg-muted/60 border border-border/60 rounded px-2 py-1.5 line-clamp-4 whitespace-pre-wrap">
+                                <span className="text-emerald-600 dark:text-emerald-400 font-semibold">Result · </span>{art}
+                              </p>
+                            )}
+                            <div className="flex items-center gap-2 mt-1.5 text-[10.5px]">
+                              <span className={cn('font-semibold', meta.cls)}>{meta.label}</span>
+                              <span className="text-muted-foreground/70 font-mono">{timeAgo(t.updatedAt || t.createdAt)}</span>
+                            </div>
+                          </div>
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Activity — the full Claude Code session process, oldest → newest, tagged by kind */}
+          {tab === 'activity' && (
+            <div className="flex-1 overflow-y-auto">
+              {(() => {
+                // Ascending timeline; drop the launcher's "thinking..." status placeholders.
+                const session = [...activity]
+                  .filter((m) => {
+                    const c = (m.content || '').trim();
+                    return c && c !== 'thinking...';
+                  })
+                  .reverse();
+                if (activityLoading && session.length === 0) {
+                  return <div className="flex items-center justify-center h-full"><RefreshCw className="size-4 text-muted-foreground animate-spin" /></div>;
+                }
+                if (session.length === 0) {
+                  return (
+                    <div className="flex flex-col items-center justify-center h-full gap-2 text-muted-foreground">
+                      <MessageSquare className="size-7 opacity-30" />
+                      <p className="text-xs">No session activity yet</p>
+                    </div>
+                  );
+                }
+                return (
+                  <div className="divide-y">
+                    {session.map((m) => {
+                      const k = activityKind(m);
+                      const Icon = k.key === 'tool' ? Terminal : k.key === 'thinking' ? Brain : k.key === 'delegate' ? Send : MessageSquare;
+                      // Hide internal A2A kick-off plumbing, same as the chat view.
+                      const text = (m.content || '').split(/\n*\[A2A delegation/)[0].trim();
+                      return (
+                        <div key={m.messageId} className="px-4 py-2.5">
+                          <div className="flex items-center gap-2 mb-1">
+                            <span className={cn('inline-flex items-center gap-1 text-[10px] font-semibold px-1.5 py-0.5 rounded', k.chip)}>
+                              <Icon className="size-2.5" />
+                              {k.label}
+                            </span>
+                            {m.sessionId && (
+                              <span className="inline-flex items-center gap-0.5 text-[10px] text-muted-foreground/80 min-w-0 truncate">
+                                <Hash className="size-2.5 shrink-0" />
+                                <span className="truncate">{m.sessionId}</span>
+                              </span>
+                            )}
+                            <span className="ml-auto text-[10px] font-mono text-muted-foreground/70 shrink-0">{timeAgo(m.createdAt)}</span>
+                          </div>
+                          {k.key === 'tool' ? (
+                            <p className="text-[11.5px] font-mono text-foreground/75 bg-muted/50 border border-border/50 rounded px-2 py-1 whitespace-pre-wrap break-all line-clamp-4">{k.detail}</p>
+                          ) : k.key === 'thinking' ? (
+                            <p className="text-[12.5px] italic leading-snug text-muted-foreground whitespace-pre-wrap line-clamp-6">{text}</p>
+                          ) : (
+                            <div className="text-[13px] leading-relaxed text-foreground/90 break-words">
+                              <MarkdownContent content={text || '…'} agentNames={agentNames} />
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                    <div ref={activityEndRef} />
+                  </div>
+                );
+              })()}
+            </div>
+          )}
+
+          {tab === 'profile' && (
+            <div className="flex-1 overflow-y-auto px-3.5 py-3 space-y-3">
           {/* Description */}
           <div className="rounded-lg border overflow-hidden">
             <div className="px-3.5 py-2.5 border-b">
@@ -377,11 +580,12 @@ export function AgentProfilePanel() {
               </div>
             );
           })()}
-
+            </div>
+          )}
         </div>
 
         {/* Footer actions */}
-        <div className="px-3.5 py-3 border-t">
+        <div className="px-3.5 py-3 border-t shrink-0">
           <div className="flex gap-2">
             <button
               onClick={handleStartThread}
@@ -403,6 +607,5 @@ export function AgentProfilePanel() {
           </div>
         </div>
       </div>
-    </>
   );
 }

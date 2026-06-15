@@ -763,6 +763,7 @@ class WorkspaceApi {
     after?: string;
     before?: string;
     target?: string;
+    source?: string;
     channel?: string;
     type?: string;
     search?: string;
@@ -773,6 +774,7 @@ class WorkspaceApi {
     if (opts.after) params.set('after', opts.after);
     if (opts.before) params.set('before', opts.before);
     if (opts.target) params.set('target', opts.target);
+    if (opts.source) params.set('source', opts.source);
     if (opts.channel) params.set('channel', opts.channel);
     if (opts.type) params.set('type', opts.type);
     if (opts.search) params.set('search', opts.search);
@@ -796,6 +798,23 @@ class WorkspaceApi {
       sort: 'desc',
       limit: options?.limit ?? 50,
     });
+  }
+
+  /**
+   * Recent messages emitted by a single agent across all channels — the
+   * agent's own conversation/activity history for its profile panel.
+   */
+  async getAgentActivity(agentName: string, limit = 150): Promise<MessagePollResponse> {
+    const result = await this.pollEvents({
+      source: `openagents:${agentName}`,
+      type: 'workspace.message',
+      sort: 'desc',
+      limit,
+    });
+    return {
+      messages: result.events.map(eventToMessage),
+      hasMore: result.has_more,
+    };
   }
 
   /** Search messages across all channels. Returns events grouped by channel. */
