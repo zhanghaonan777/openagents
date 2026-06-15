@@ -506,7 +506,7 @@ def _fallback_targets(event, channel, mentions: List[str]) -> List[str]:
     Priority: explicit @mentions → master (for human/member msgs) → all participants.
     """
     if mentions:
-        return [mentions[0]]
+        return mentions
     if channel.master_agent:
         if event.source.startswith("openagents:"):
             sender = event.source[len("openagents:"):]
@@ -956,12 +956,24 @@ async def _handle_message_posted(event: Event, ctx: PipelineContext) -> Optional
     if not channel:
         return event
 
-    # ── Multi-agent channel: always use LLM router ──────────────────
+    # ── Routing ─────────────────────────────────────────────────────
     real_participants = [
         p for p in (channel.participants or [])
         if p.agent_name != "__no_response__"
     ]
-    if len(real_participants) >= 2:
+    is_human = event.source.startswith("human:")
+    # A human can address the whole room with @all / @everyone / @channel /
+    # @here — every participant replies (a roll-call), not just one.
+    broadcast = is_human and bool(re.search(r"@(all|everyone|channel|here)\b", content, re.IGNORECASE))
+
+    if broadcast:
+        targets = [p.agent_name for p in real_participants]
+    elif is_human and mentions:
+        # Explicit @mentions from a human address ALL the named agents — each
+        # one replies. (The serial LLM router would otherwise pick just one.)
+        targets = mentions
+    elif len(real_participants) >= 2:
+        # ── Multi-agent channel: let the LLM router pick the next speaker ──
         from app.config import config
         if config.ROUTER_LLM_ENABLED and _get_router_api_key():
             targets = await _route_with_llm(channel, event, db, workspace)

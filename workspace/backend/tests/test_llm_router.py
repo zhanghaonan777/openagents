@@ -340,3 +340,28 @@ class TestMessagePostedTargetAgents:
 
         out = _run(_handle_message_posted(event, ctx))
         assert out.metadata.get("target_agents") == ["agent-master"]
+
+    def test_human_multimention_targets_all(self, db, multi_agent_workspace):
+        """A human @mentioning several agents addresses ALL of them — each
+        replies — not just the first (the LLM router is bypassed)."""
+        from app.mods.workspace_mod import _handle_message_posted
+        from openagents.core.onm_mods import PipelineContext
+
+        ws = multi_agent_workspace["workspace"]
+        event = _make_event("human:user", "channel/session-test", "@agent-master @agent-worker report in")
+        ctx = PipelineContext(network_id=str(ws.id), agent_address="human:user", db=db, workspace=ws)
+
+        out = _run(_handle_message_posted(event, ctx))
+        assert set(out.metadata["target_agents"]) == {"agent-master", "agent-worker"}
+
+    def test_human_at_all_broadcasts_to_room(self, db, multi_agent_workspace):
+        """`@all` from a human is a roll-call — every channel participant is targeted."""
+        from app.mods.workspace_mod import _handle_message_posted
+        from openagents.core.onm_mods import PipelineContext
+
+        ws = multi_agent_workspace["workspace"]
+        event = _make_event("human:user", "channel/session-test", "@all sound off, are you online?")
+        ctx = PipelineContext(network_id=str(ws.id), agent_address="human:user", db=db, workspace=ws)
+
+        out = _run(_handle_message_posted(event, ctx))
+        assert set(out.metadata["target_agents"]) == {"agent-master", "agent-worker"}
