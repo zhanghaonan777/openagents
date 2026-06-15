@@ -365,3 +365,17 @@ class TestMessagePostedTargetAgents:
 
         out = _run(_handle_message_posted(event, ctx))
         assert set(out.metadata["target_agents"]) == {"agent-master", "agent-worker"}
+
+    def test_broadcast_does_not_false_positive_on_email_or_handle(self, db, multi_agent_workspace):
+        """An email address (x@all.com) or a hyphenated handle (@all-hands) must
+        NOT trigger a room-wide roll-call — only the bare @all/@everyone/etc. does."""
+        from app.mods.workspace_mod import _handle_message_posted
+        from openagents.core.onm_mods import PipelineContext
+
+        ws = multi_agent_workspace["workspace"]
+        for content in ("ping me at bob@all.com when ready", "the @all-hands meeting is at 3"):
+            event = _make_event("human:user", "channel/session-test", content)
+            ctx = PipelineContext(network_id=str(ws.id), agent_address="human:user", db=db, workspace=ws)
+            out = _run(_handle_message_posted(event, ctx))
+            # No broadcast → falls back to the single master, not the whole room.
+            assert out.metadata["target_agents"] == ["agent-master"], content

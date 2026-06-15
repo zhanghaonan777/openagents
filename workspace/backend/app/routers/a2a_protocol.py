@@ -27,9 +27,10 @@ from fastapi import APIRouter, Depends, Header, Request
 from fastapi.responses import JSONResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.exc import StaleDataError
 
 from app.database import get_db
-from app.models import TaskRecord, WorkspaceMember
+from app.models import Channel, TaskRecord, WorkspaceMember
 from app.routers.network import (
     _emit_event_blocking,
     _resolve_workspace,
@@ -45,6 +46,7 @@ from app.routers.a2a import (
     _is_member,
     _message,
     _now,
+    build_delegation_kickoff,
 )
 from openagents.core.onm_events import Event
 
@@ -246,26 +248,36 @@ async def jsonrpc(
         )
         db.add(task)
         db.flush()
-        if context_id:
+        # Only post the contractor kick-off into a channel that ACTUALLY exists
+        # in this workspace. The protocol surface is the external-interop layer,
+        # so a client-supplied contextId must never be used to inject an
+        # @-mention into an arbitrary channel name (C1).
+        channel_exists = bool(context_id) and db.execute(
+            select(Channel.id).where(
+                Channel.workspace_id == workspace.id,
+                Channel.name == context_id,
+            )
+        ).scalar_one_or_none() is not None
+        if channel_exists:
             try:
                 _emit_event_blocking(Event(
                     type="workspace.message.posted", source=delegator,
                     target=f"channel/{context_id}",
                     payload={
-                        "content": (
-                            f"@{agent_name} {text}\n\n"
-                            f"[A2A delegation · task {task.id}] You are the contractor. Drive this task's "
-                            f"lifecycle with the a2a-delegation skill — mark it `working`, then report via "
-                            f"POST /v1/a2a/tasks/{task.id}/status (state=completed, artifact_text=<result>) "
-                            f"or state=failed. Don't just reply in chat."
-                        ),
+                        "content": build_delegation_kickoff(agent_name, text, task.id),
                         "message_type": "delegate",
                     },
                     metadata={"taskId": task.id},
                 ), workspace, db, token=x_workspace_token)
             except Exception:
                 logger.exception("a2a-protocol: kick-off failed for %s", task.id)
-        db.commit()
+        elif context_id:
+            logger.warning("a2a-protocol: skipping kick-off — channel %r not in workspace", context_id)
+        try:
+            db.commit()
+        except StaleDataError:
+            db.rollback()
+            return _err(req_id, INTERNAL_ERROR, "Task was modified concurrently", http=200)
         db.refresh(task)
         return _ok(req_id, _a2a_task(task))
 
@@ -274,7 +286,13 @@ async def jsonrpc(
         task = _load(params.get("id", ""))
         if not task:
             return _err(req_id, TASK_NOT_FOUND, "Task not found")
-        return _ok(req_id, _a2a_task(task, params.get("historyLength")))
+        hl = params.get("historyLength")
+        if hl is not None:
+            try:
+                hl = int(hl)
+            except (TypeError, ValueError):
+                hl = None  # ignore a malformed historyLength rather than 500
+        return _ok(req_id, _a2a_task(task, hl))
 
     # ── tasks/cancel ──
     if method == "tasks/cancel":
@@ -284,7 +302,11 @@ async def jsonrpc(
         if task.state in TERMINAL_STATES:
             return _err(req_id, TASK_NOT_CANCELABLE, f"Task is already {task.state}")
         _apply_transition(task, "canceled", _message("agent", "Canceled by A2A client."))
-        db.commit()
+        try:
+            db.commit()
+        except StaleDataError:
+            db.rollback()
+            return _err(req_id, INTERNAL_ERROR, "Task was modified concurrently", http=200)
         db.refresh(task)
         return _ok(req_id, _a2a_task(task))
 

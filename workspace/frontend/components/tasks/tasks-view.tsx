@@ -7,19 +7,9 @@ import { useWorkspace } from '@/lib/workspace-context';
 import { useLayout } from '@/components/layout/layout-context';
 import { AgentAvatar } from '@/components/agents/agent-avatar';
 import { colorFromName } from '@/lib/role-templates';
+import { timeAgoShort as timeAgo } from '@/lib/helpers';
+import { taskRequestText, taskArtifactText } from '@/lib/a2a';
 import type { A2ATask, A2ATaskState } from '@/lib/types';
-
-function timeAgo(dateStr: string | null): string {
-  if (!dateStr) return '';
-  const diff = Date.now() - new Date(dateStr).getTime();
-  const mins = Math.floor(diff / 60000);
-  if (mins < 1) return 'just now';
-  if (mins < 60) return `${mins}m ago`;
-  const hours = Math.floor(mins / 60);
-  if (hours < 24) return `${hours}h ago`;
-  const days = Math.floor(hours / 24);
-  return `${days}d ago`;
-}
 
 /** Kanban columns mapped to A2A TaskState. */
 const BOARD_COLS: { id: string; label: string; dot: string; states: A2ATaskState[] }[] = [
@@ -29,22 +19,13 @@ const BOARD_COLS: { id: string; label: string; dot: string; states: A2ATaskState
   { id: 'done', label: 'Done', dot: '#22c55e', states: ['completed', 'failed', 'canceled', 'rejected'] },
 ];
 
-function taskText(t: A2ATask): string {
-  const hist = t.history || [];
-  const m = hist.find((h) => h.role === 'user' && h.parts?.[0]?.text) || hist.find((h) => h.parts?.[0]?.text);
-  return m?.parts?.[0]?.text || '(task)';
-}
-
 function TaskCard({ task, flash, onOpen }: { task: A2ATask; flash: boolean; onOpen: () => void }) {
   const who = task.contractorName;
   const railColor = colorFromName(who);
   const terminal = ['completed', 'failed', 'canceled', 'rejected'].includes(task.state);
   const failed = task.state === 'failed' || task.state === 'rejected' || task.state === 'canceled';
   // The contractor's deliverable, reported via the A2A task status (artifact).
-  const artifactText = (task.artifacts || [])
-    .flatMap((a) => (a.parts || []).map((p) => p.text || ''))
-    .join('\n')
-    .trim();
+  const artifactText = taskArtifactText(task);
   return (
     <button
       onClick={onOpen}
@@ -55,7 +36,7 @@ function TaskCard({ task, flash, onOpen }: { task: A2ATask; flash: boolean; onOp
       )}
     >
       <p className={cn('text-[12.5px] leading-snug text-pretty mb-2.5', terminal && 'text-muted-foreground', failed && 'line-through')}>
-        {taskText(task)}
+        {taskRequestText(task)}
       </p>
       {artifactText && (
         <div

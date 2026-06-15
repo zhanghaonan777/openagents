@@ -69,32 +69,34 @@ def _poll_cache_keys_for(workspace_id: str, event_type: str = ""):
     """
     keys = []
 
-    # Build the same filter_parts the poll endpoint uses:
-    #   [workspace_id, target, channel, type, conversation, sort, limit]
+    # Build the SAME filter_parts the poll endpoint uses (must stay in lock-step
+    # with poll_events' `filter_parts`, or invalidation silently stops matching):
+    #   [workspace_id, target, source, channel, type, conversation, sort, limit]
+    # Agents poll without a `source` filter, so source is always "" here.
     common_filters = []
 
     if event_type.startswith("workspace.message"):
         for sort in ("asc",):
             for limit in (500,):
                 common_filters.append(
-                    (workspace_id, "", "", "workspace.message.posted", "", sort, str(limit))
+                    (workspace_id, "", "", "", "workspace.message.posted", "", sort, str(limit))
                 )
         # getHeadEventId uses sort=desc, limit=1
         common_filters.append(
-            (workspace_id, "", "", "workspace.message.posted", "", "desc", "1")
+            (workspace_id, "", "", "", "workspace.message.posted", "", "desc", "1")
         )
 
     elif event_type.startswith("workspace.agent.control"):
         for limit in (50, 500):
             common_filters.append(
-                (workspace_id, "", "", "workspace.agent.control", "", "asc", str(limit))
+                (workspace_id, "", "", "", "workspace.agent.control", "", "asc", str(limit))
             )
 
     # Always invalidate the untyped "all events" poll pattern too
     for sort in ("asc", "desc"):
         for limit in (50, 500):
             common_filters.append(
-                (workspace_id, "", "", "", "", sort, str(limit))
+                (workspace_id, "", "", "", "", "", sort, str(limit))
             )
 
     for parts in common_filters:

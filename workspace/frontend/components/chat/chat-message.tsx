@@ -5,42 +5,21 @@ import { Button } from '@/components/ui/button';
 import { Copy, Check, User, FileIcon, Download, Eye, ListTodo } from 'lucide-react';
 import { toast } from 'sonner';
 import { memo, useCallback, useMemo, useState } from 'react';
-import type { WorkspaceMessage, WorkspaceAgent, A2ATask, A2ATaskState } from '@/lib/types';
+import type { WorkspaceMessage, WorkspaceAgent, A2ATask } from '@/lib/types';
 import { AgentAvatar } from '@/components/agents/agent-avatar';
 import { MarkdownContent } from './markdown-content';
 import { workspaceApi } from '@/lib/api';
 import { useLayout } from '@/components/layout/layout-context';
 import { useWorkspace } from '@/lib/workspace-context';
 import { colorFromName, roleTemplateByName } from '@/lib/role-templates';
+import { taskRequestText, taskStatusMeta, stripDelegationPlumbing } from '@/lib/a2a';
 import { CategoryChip } from '@/components/agents/role-library';
-
-function delegateStatusLabel(s: A2ATaskState): string {
-  if (s === 'working') return 'In Progress';
-  if (s === 'input-required') return 'Review';
-  if (s === 'completed') return 'Done';
-  if (s === 'failed') return 'Failed';
-  if (s === 'canceled') return 'Canceled';
-  if (s === 'rejected') return 'Rejected';
-  return 'To Do';
-}
-
-function delegateStatusClass(s: A2ATaskState): string {
-  if (s === 'working') return 'text-blue-500 font-semibold';
-  if (s === 'completed') return 'text-emerald-500 font-semibold';
-  if (s === 'input-required') return 'text-amber-500 font-semibold';
-  return 'text-muted-foreground font-semibold';
-}
-
-function a2aTaskText(t: A2ATask): string {
-  const hist = t.history || [];
-  const m = hist.find((h) => h.role === 'user' && h.parts?.[0]?.text) || hist.find((h) => h.parts?.[0]?.text);
-  return m?.parts?.[0]?.text || '(task)';
-}
 
 /** A2A task card mounted under a `delegate` chat message — jumps to the board. */
 function DelegateTaskCard({ task, onJump }: { task: A2ATask; onJump: () => void }) {
   const who = task.contractorName;
   const c = colorFromName(who);
+  const status = taskStatusMeta(task.state);
   return (
     <button
       onClick={onJump}
@@ -49,10 +28,10 @@ function DelegateTaskCard({ task, onJump }: { task: A2ATask; onJump: () => void 
     >
       <ListTodo className="size-[15px] shrink-0" style={{ color: c }} />
       <div className="flex-1 min-w-0">
-        <div className="text-[12.5px] font-semibold truncate">{a2aTaskText(task)}</div>
+        <div className="text-[12.5px] font-semibold truncate">{taskRequestText(task)}</div>
         <div className="text-[11px] text-muted-foreground mt-0.5">
           A2A task · {who} ·{' '}
-          <span className={delegateStatusClass(task.state)}>{delegateStatusLabel(task.state)}</span>
+          <span className={cn('font-semibold', status.cls)}>{status.label}</span>
         </div>
       </div>
       <span className="text-[11.5px] font-semibold text-primary shrink-0">Board →</span>
@@ -84,8 +63,6 @@ function isPreviewable(contentType: string, filename: string): boolean {
 }
 
 function Attachments({ items }: { items: Attachment[] }) {
-  if (!items || items.length === 0) return null;
-
   const { setViewMode } = useLayout();
   const { setSelectedFileId } = useWorkspace();
 
@@ -99,6 +76,9 @@ function Attachments({ items }: { items: Attachment[] }) {
     items.map((a) => ({ ...a, url: workspaceApi.getFileUrl(a.fileId) })),
     [items]
   );
+
+  // After all hooks — safe to bail out (Rules of Hooks).
+  if (!items || items.length === 0) return null;
 
   const images = fixedItems.filter((a) => a.contentType?.startsWith('image/'));
   const files = fixedItems.filter((a) => !a.contentType?.startsWith('image/'));
@@ -175,7 +155,7 @@ export const ChatMessage = memo(function ChatMessage({ message, agents = [] }: C
   // A delegate kick-off embeds an internal "[A2A delegation · task …]" instruction
   // the contractor agent reads to drive the task — hide that plumbing from humans
   // (the structured task card below already shows what matters).
-  const displayContent = message.content.split(/\n*\[A2A delegation/)[0].trimEnd();
+  const displayContent = stripDelegationPlumbing(message.content);
 
   const agentNames = agents.map((a) => a.agentName);
   const agent = agents.find((a) => a.agentName === message.senderName);

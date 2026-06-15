@@ -66,6 +66,28 @@ _WIRE_STATE = {"input_required": "input-required"}
 # activity is reaped (working → failed[timeout], input_required → canceled).
 LEASE_SECONDS = int(os.environ.get("A2A_TASK_LEASE_SECONDS", "3600"))
 
+# Marker that prefixes the internal contractor instruction embedded in a
+# delegation kick-off message. The frontend splits display content on this same
+# marker to hide the plumbing from humans, so it is a cross-stack contract —
+# keep it in sync with the frontend `A2A_DELEGATION_MARKER` (lib/a2a.ts).
+DELEGATION_MARKER = "[A2A delegation"
+
+
+def build_delegation_kickoff(contractor_name: str, text: str, task_id: str) -> str:
+    """The channel message that wakes a contractor and tells it to drive the task.
+
+    One definition shared by the internal gateway (routers/a2a.py) and the
+    conformant protocol surface (routers/a2a_protocol.py) so the wording and the
+    embedded status endpoint can never drift between them.
+    """
+    return (
+        f"@{contractor_name} {text}\n\n"
+        f"{DELEGATION_MARKER} · task {task_id}] You are the contractor. Drive this task's "
+        f"lifecycle with the a2a-delegation skill — mark it `working`, then report the result "
+        f"via POST /v1/a2a/tasks/{task_id}/status (state=completed, artifact_text=<result>) "
+        f"or state=failed. Don't just reply in chat."
+    )
+
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
@@ -186,10 +208,11 @@ def advance_tasks_on_contractor_activity(
                 _apply_transition(t, "working", _message("agent", "Started working."))
 
         # Auto-complete only when the mapping is unambiguous: exactly one
-        # delegation shares this channel. With multiple, a single shared todo
-        # list can't be attributed to one task, so completion stays explicit
-        # (POST /tasks/{id}/status) to avoid completing the wrong one.
-        if len(tasks) == 1 and tasks[0].state == "working":
+        # delegation shares this *named* channel. With multiple — or with a
+        # channel-less delegation (channel is None, whose todos would otherwise
+        # be looked up under the unrelated "default" bucket) — completion stays
+        # explicit (POST /tasks/{id}/status) to avoid completing the wrong one.
+        if channel and len(tasks) == 1 and tasks[0].state == "working":
             todos = db.execute(
                 select(TodoRecord).where(
                     TodoRecord.workspace_id == workspace_id,
@@ -434,13 +457,7 @@ def create_task(
                 source=body.source,
                 target=f"channel/{body.context_id}",
                 payload={
-                    "content": (
-                        f"@{contractor_name} {body.text}\n\n"
-                        f"[A2A delegation · task {task.id}] You are the contractor. Drive this task's "
-                        f"lifecycle with the a2a-delegation skill — mark it `working`, then report the "
-                        f"result via POST /v1/a2a/tasks/{task.id}/status (state=completed, "
-                        f"artifact_text=<result>) or state=failed. Don't just reply in chat."
-                    ),
+                    "content": build_delegation_kickoff(contractor_name, body.text, task.id),
                     "message_type": "delegate",
                 },
                 metadata={"taskId": task.id},

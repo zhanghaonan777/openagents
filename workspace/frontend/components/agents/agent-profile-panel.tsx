@@ -10,32 +10,9 @@ import { useCopyToClipboard } from '@/hooks/use-copy-to-clipboard';
 import { workspaceApi } from '@/lib/api';
 import { cn } from '@/lib/utils';
 import { toast } from 'sonner';
-import type { CloudAgentConfig, A2ATask, A2ATaskState, WorkspaceMessage } from '@/lib/types';
-
-function timeAgo(dateStr: string | null): string {
-  if (!dateStr) return '';
-  const diff = Date.now() - new Date(dateStr).getTime();
-  const mins = Math.floor(diff / 60000);
-  if (mins < 1) return 'just now';
-  if (mins < 60) return `${mins}m ago`;
-  const hours = Math.floor(mins / 60);
-  if (hours < 24) return `${hours}h ago`;
-  const days = Math.floor(hours / 24);
-  return `${days}d ago`;
-}
-
-function taskRequestText(t: A2ATask): string {
-  const hist = t.history || [];
-  const m = hist.find((h) => h.role === 'user' && h.parts?.[0]?.text) || hist.find((h) => h.parts?.[0]?.text);
-  return m?.parts?.[0]?.text || '(task)';
-}
-
-function taskArtifactText(t: A2ATask): string {
-  return (t.artifacts || [])
-    .flatMap((a) => (a.parts || []).map((p) => p.text || ''))
-    .join('\n')
-    .trim();
-}
+import { timeAgoShort as timeAgo } from '@/lib/helpers';
+import { taskRequestText, taskArtifactText, taskStatusMeta, stripDelegationPlumbing } from '@/lib/a2a';
+import type { CloudAgentConfig, WorkspaceMessage } from '@/lib/types';
 
 /** Classify one session event into a typed, labelled timeline entry. */
 type ActivityKey = 'tool' | 'thinking' | 'delegate' | 'message';
@@ -54,15 +31,6 @@ function activityKind(m: WorkspaceMessage): { key: ActivityKey; label: string; c
     return { key: 'tool', label: tool || 'Tool', chip: 'text-amber-700 bg-amber-500/14 dark:text-amber-300', detail: i > 0 ? content.slice(i + 1).trim() : content };
   }
   return { key: 'message', label: 'Message', chip: 'text-sky-700 bg-sky-500/12 dark:text-sky-300', detail: content };
-}
-
-function taskStatusMeta(s: A2ATaskState): { label: string; cls: string; dot: string } {
-  if (s === 'working') return { label: 'In Progress', cls: 'text-blue-600 dark:text-blue-400', dot: '#3b82f6' };
-  if (s === 'input-required') return { label: 'Review', cls: 'text-amber-600 dark:text-amber-400', dot: '#f59e0b' };
-  if (s === 'completed') return { label: 'Done', cls: 'text-emerald-600 dark:text-emerald-400', dot: '#22c55e' };
-  if (s === 'failed' || s === 'rejected') return { label: s === 'failed' ? 'Failed' : 'Rejected', cls: 'text-red-600 dark:text-red-400', dot: '#ef4444' };
-  if (s === 'canceled') return { label: 'Canceled', cls: 'text-muted-foreground', dot: '#a1a1aa' };
-  return { label: 'To Do', cls: 'text-muted-foreground', dot: '#a1a1aa' };
 }
 
 export function AgentProfilePanel() {
@@ -346,7 +314,7 @@ export function AgentProfilePanel() {
                       const k = activityKind(m);
                       const Icon = k.key === 'tool' ? Terminal : k.key === 'thinking' ? Brain : k.key === 'delegate' ? Send : MessageSquare;
                       // Hide internal A2A kick-off plumbing, same as the chat view.
-                      const text = (m.content || '').split(/\n*\[A2A delegation/)[0].trim();
+                      const text = stripDelegationPlumbing(m.content);
                       return (
                         <div
                           key={m.messageId}

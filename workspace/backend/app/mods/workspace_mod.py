@@ -963,8 +963,15 @@ async def _handle_message_posted(event: Event, ctx: PipelineContext) -> Optional
     ]
     is_human = event.source.startswith("human:")
     # A human can address the whole room with @all / @everyone / @channel /
-    # @here — every participant replies (a roll-call), not just one.
-    broadcast = is_human and bool(re.search(r"@(all|everyone|channel|here)\b", content, re.IGNORECASE))
+    # @here — every participant replies (a roll-call), not just one. Boundaries
+    # are tight on BOTH sides so email addresses ("x@all.com") and hyphenated
+    # handles ("@all-hands") don't trigger a spurious fan-out; and a token that
+    # is the literal name of a real agent is treated as a normal @mention.
+    broadcast = False
+    if is_human:
+        _bc = re.search(r"(?<![\w@])@(all|everyone|channel|here)(?![\w.-])", content, re.IGNORECASE)
+        if _bc and _bc.group(1).lower() not in {a.lower() for a in known_agents}:
+            broadcast = True
 
     if broadcast:
         targets = [p.agent_name for p in real_participants]
