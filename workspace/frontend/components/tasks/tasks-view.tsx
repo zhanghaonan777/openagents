@@ -40,6 +40,11 @@ function TaskCard({ task, flash, onOpen }: { task: A2ATask; flash: boolean; onOp
   const railColor = colorFromName(who);
   const terminal = ['completed', 'failed', 'canceled', 'rejected'].includes(task.state);
   const failed = task.state === 'failed' || task.state === 'rejected' || task.state === 'canceled';
+  // The contractor's deliverable, reported via the A2A task status (artifact).
+  const artifactText = (task.artifacts || [])
+    .flatMap((a) => (a.parts || []).map((p) => p.text || ''))
+    .join('\n')
+    .trim();
   return (
     <button
       onClick={onOpen}
@@ -52,6 +57,15 @@ function TaskCard({ task, flash, onOpen }: { task: A2ATask; flash: boolean; onOp
       <p className={cn('text-[12.5px] leading-snug text-pretty mb-2.5', terminal && 'text-muted-foreground', failed && 'line-through')}>
         {taskText(task)}
       </p>
+      {artifactText && (
+        <div
+          title={artifactText}
+          className="mb-2.5 text-[11px] leading-snug text-foreground/75 bg-muted/60 border border-border/60 rounded-md px-2 py-1.5 whitespace-pre-wrap line-clamp-4"
+        >
+          <span className="text-emerald-600 dark:text-emerald-400 font-semibold">Result · </span>
+          {artifactText}
+        </div>
+      )}
       <div className="flex items-center justify-between gap-2">
         <span className="inline-flex items-center gap-1.5 min-w-0 text-[11px] text-muted-foreground">
           <AgentAvatar name={who} size={18} />

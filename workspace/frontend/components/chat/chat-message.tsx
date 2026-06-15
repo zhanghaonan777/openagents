@@ -172,6 +172,11 @@ export const ChatMessage = memo(function ChatMessage({ message, agents = [] }: C
   const isDelegate = message.messageType === 'delegate';
   const [copied, setCopied] = useState(false);
 
+  // A delegate kick-off embeds an internal "[A2A delegation · task …]" instruction
+  // the contractor agent reads to drive the task — hide that plumbing from humans
+  // (the structured task card below already shows what matters).
+  const displayContent = message.content.split(/\n*\[A2A delegation/)[0].trimEnd();
+
   const agentNames = agents.map((a) => a.agentName);
   const agent = agents.find((a) => a.agentName === message.senderName);
   const rawAttachments = (message.metadata?.attachments as Record<string, unknown>[]) || [];
@@ -291,7 +296,7 @@ export const ChatMessage = memo(function ChatMessage({ message, agents = [] }: C
             )}
           </div>
           <div className="text-sm leading-relaxed mt-0.5">
-            <MarkdownContent content={message.content} agentNames={agentNames} />
+            <MarkdownContent content={displayContent} agentNames={agentNames} />
             <Attachments items={attachments} />
 
             {/* Delegate → linked task card (jumps to the board) */}
