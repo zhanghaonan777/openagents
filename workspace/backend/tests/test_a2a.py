@@ -195,6 +195,59 @@ def test_optimistic_lock_blocks_concurrent_update(client, workspace, db):
         other.close()
 
 
+def test_bridge_survives_concurrent_version_bump(client, workspace, db):
+    """H2: if a task is advanced concurrently while the todos→task bridge runs,
+    the bridge's optimistic-lock conflict is isolated in a SAVEPOINT and must
+    NOT fail the caller's todo commit."""
+    from sqlalchemy import update
+    from sqlalchemy.orm import Session as SASession
+    from app.models import TaskRecord, TodoRecord
+    from app.routers.a2a import advance_tasks_on_contractor_activity, _agent_address
+
+    _join(client, workspace, "coder")
+    tid = _delegate(client, workspace).json()["data"]["id"]  # state: submitted
+    ws_id = workspace["id"]
+    chan = workspace["channel"]["name"]
+    coder = _agent_address("coder")
+
+    db.expire_all()
+    # The caller's pending write that must survive (todos.py commits this).
+    db.add(TodoRecord(workspace_id=ws_id, channel_name=chan, created_by=coder,
+                      assignee=coder, content="scaffold", status="in_progress"))
+    # Cache the task in this session at version N, then bump the DB version behind
+    # its back (a concurrent reaper/status writer) — keeping it in the bridge's
+    # query range so the bridge still tries to advance it and hits the conflict.
+    cached = db.get(TaskRecord, tid)
+    assert cached.state == "submitted"
+    other = SASession(bind=db.get_bind())
+    try:
+        other.execute(update(TaskRecord).where(TaskRecord.id == tid).values(version=cached.version + 1))
+        other.commit()
+    finally:
+        other.close()
+
+    # Bridge runs against the stale cached task → StaleDataError swallowed.
+    advance_tasks_on_contractor_activity(db, ws_id, coder, chan)
+    db.commit()  # must NOT raise
+
+    db.expire_all()
+    todos = db.query(TodoRecord).filter_by(workspace_id=ws_id, created_by=coder).all()
+    assert any(t.content == "scaffold" for t in todos)  # caller's write persisted
+
+
+def test_wait_returns_non_terminal_task_on_timeout(client, workspace):
+    """H3: blocking `wait` releases the DB connection each tick and returns the
+    task (still non-terminal) when the contractor doesn't finish in time."""
+    _join(client, workspace, "coder")
+    r = client.post("/v1/a2a/tasks", json={
+        "network": workspace["id"], "source": "openagents:pm",
+        "contractor": "coder", "text": "do x",
+        "context_id": workspace["channel"]["name"], "wait": 1,
+    }, headers=_hdr(workspace))
+    assert r.status_code == 200, r.text
+    assert r.json()["data"]["state"] in ("submitted", "working")
+
+
 def _force_lease_expired(db, task_id):
     from app.models import TaskRecord
     db.expire_all()

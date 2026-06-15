@@ -202,32 +202,40 @@ def advance_tasks_on_contractor_activity(
         if not tasks:
             return
 
-        # Start any submitted delegations the contractor is now working on.
-        for t in tasks:
-            if t.state == "submitted":
-                _apply_transition(t, "working", _message("agent", "Started working."))
+        # Apply the transitions inside a SAVEPOINT. If a concurrent reaper or
+        # status update bumped a task's version, the optimistic-lock conflict
+        # rolls back ONLY these task changes (best-effort) instead of surfacing
+        # at the caller's commit (todos.py) and failing the whole todo write.
+        try:
+            with db.begin_nested():
+                # Start any submitted delegations the contractor is now working on.
+                for t in tasks:
+                    if t.state == "submitted":
+                        _apply_transition(t, "working", _message("agent", "Started working."))
 
-        # Auto-complete only when the mapping is unambiguous: exactly one
-        # delegation shares this *named* channel. With multiple — or with a
-        # channel-less delegation (channel is None, whose todos would otherwise
-        # be looked up under the unrelated "default" bucket) — completion stays
-        # explicit (POST /tasks/{id}/status) to avoid completing the wrong one.
-        if channel and len(tasks) == 1 and tasks[0].state == "working":
-            todos = db.execute(
-                select(TodoRecord).where(
-                    TodoRecord.workspace_id == workspace_id,
-                    TodoRecord.created_by == contractor_addr,
-                    TodoRecord.channel_name == (channel or "default"),
-                )
-            ).scalars().all()
-            if todos and all(td.status == "completed" for td in todos):
-                t = tasks[0]
-                _apply_transition(t, "completed", _message("agent", "All to-dos completed."))
-                summary = "; ".join(td.content for td in todos)
-                t.artifacts = list(t.artifacts or []) + [
-                    {"id": t.id, "name": "result", "parts": [{"text": summary}]}
-                ]
-        db.flush()
+                # Auto-complete only when the mapping is unambiguous: exactly one
+                # delegation shares this *named* channel. With multiple — or with a
+                # channel-less delegation — completion stays explicit (POST
+                # /tasks/{id}/status) to avoid completing the wrong one.
+                if channel and len(tasks) == 1 and tasks[0].state == "working":
+                    todos = db.execute(
+                        select(TodoRecord).where(
+                            TodoRecord.workspace_id == workspace_id,
+                            TodoRecord.created_by == contractor_addr,
+                            TodoRecord.channel_name == channel,
+                        )
+                    ).scalars().all()
+                    if todos and all(td.status == "completed" for td in todos):
+                        t = tasks[0]
+                        _apply_transition(t, "completed", _message("agent", "All to-dos completed."))
+                        summary = "; ".join(td.content for td in todos)
+                        t.artifacts = list(t.artifacts or []) + [
+                            {"id": t.id, "name": "result", "parts": [{"text": summary}]}
+                        ]
+                db.flush()
+        except StaleDataError:
+            # A worker/reaper advanced the task first — drop our changes, keep todos.
+            logger.info("a2a: bridge task-advance skipped — task changed concurrently")
     except Exception:  # pragma: no cover - bridge must never break todos
         logger.exception("a2a: failed to advance tasks on contractor activity")
 
@@ -489,10 +497,19 @@ def create_task(
     # task to a terminal state, then return it with its result artifact — so the
     # delegator can synthesize the result into its own answer (agent-as-tool).
     if body.wait and body.wait > 0:
+        task_id = task.id
         deadline = time.time() + min(body.wait, MAX_WAIT_SECONDS)
-        while time.time() < deadline and task.state not in TERMINAL_STATES:
+        while task.state not in TERMINAL_STATES and time.time() < deadline:
+            # Release the pooled DB connection while we sleep, so a long blocking
+            # delegation doesn't pin a connection (pool is 40+8) for the whole
+            # wait. Re-read on a fresh connection each tick. (The threadpool slot
+            # is still held — that's inherent to a sync blocking handler.)
+            db.close()
             time.sleep(2)
-            db.refresh(task)
+            refreshed = db.get(TaskRecord, task_id)
+            if refreshed is None:
+                break
+            task = refreshed
 
     return success_response(_serialize_task(task))
 
