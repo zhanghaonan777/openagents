@@ -2,8 +2,8 @@
 """Generate lib/role-templates.data.ts from VoltAgent/awesome-claude-code-subagents.
 
 Usage:
-  git clone --depth 1 https://github.com/VoltAgent/awesome-claude-code-subagents /tmp/acs
-  python3 scripts/gen-roles.py /tmp/acs/categories
+  git clone --depth 1 https://github.com/VoltAgent/awesome-claude-code-subagents /tmp/awesome-claude-code-subagents
+  python3 scripts/gen-roles.py /tmp/awesome-claude-code-subagents/categories
 """
 import json, os, re, glob
 
@@ -14,7 +14,7 @@ OUT = sys.argv[2] if len(sys.argv) > 2 else os.path.join(os.path.dirname(__file_
 ACRONYMS = {"api","ai","ml","ui","ux","qa","sql","css","html","ios","sre","devops",
             "graphql","nlp","llm","ci","cd","aws","gcp","ci/cd","cli","sdk","seo",
             "iot","ar","vr","3d","ocr","etl","mlops","devsecops","wordpress","php",
-            "ios","macos","tui","saas","crm","erp","b2b","pwa"}
+            "macos","tui","saas","crm","erp","b2b","pwa"}
 
 def humanize(slug: str) -> str:
     parts = slug.split("-")
@@ -160,7 +160,7 @@ for d in sorted(os.listdir(SRC)):
 header = (
     "/* AUTO-GENERATED from VoltAgent/awesome-claude-code-subagents "
     f"({len(roles)} roles, 10 categories).\n"
-    "   Regenerate with /tmp/gen_roles.py — do not edit by hand. */\n"
+    "   Regenerate with scripts/gen-roles.py — do not edit by hand. */\n"
     "import type { RoleTemplate } from './role-templates';\n\n"
     "export const ROLE_TEMPLATES: RoleTemplate[] = "
 )

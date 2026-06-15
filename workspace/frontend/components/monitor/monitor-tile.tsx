@@ -18,6 +18,7 @@ import {
   Eye,
 } from 'lucide-react';
 import type { WorkspaceAgent, WorkspaceMessage, WorkspaceSession } from '@/lib/types';
+import { parseToolStep, toolStepLabel, type ParsedStep } from '@/lib/tool-step';
 import type { TileData } from './monitor-grid';
 
 interface MonitorTileProps {
@@ -33,57 +34,21 @@ interface MonitorTileProps {
 
 // ── Parsing (mirrors intermediate-steps.tsx patterns) ──
 
-interface ParsedStep {
-  type: 'thinking' | 'tool_call' | 'status' | 'compacting';
-  label: string;
-}
-
-function parseStep(msg: WorkspaceMessage): ParsedStep {
-  const content = msg.content;
-
-  if (msg.messageType === 'thinking' || content === 'thinking...' || content.toLowerCase() === 'thinking') {
-    // Extract actual thinking text if present
-    const thinkMatch = content.match(/^\*\*Thinking:\*\*\n([\s\S]+)$/);
-    if (thinkMatch) {
-      return { type: 'thinking', label: thinkMatch[1].trim().slice(0, 80) };
-    }
-    if (content !== 'thinking...' && content.toLowerCase() !== 'thinking' && msg.messageType === 'thinking') {
-      return { type: 'thinking', label: content.slice(0, 80) };
-    }
-    return { type: 'thinking', label: 'thinking...' };
+// Dense one-line step for the monitor tile — delegates parsing to the shared
+// parser, then flattens to a label (CSS truncates it in the tile).
+function parseStep(msg: WorkspaceMessage): { type: ParsedStep['type']; label: string } {
+  // A thinking message whose body isn't the **Thinking:** form still shows its text.
+  if (
+    msg.messageType === 'thinking' &&
+    !/^\*\*Thinking:\*\*/.test(msg.content) &&
+    msg.content !== 'thinking...' &&
+    msg.content.toLowerCase() !== 'thinking'
+  ) {
+    return { type: 'thinking', label: msg.content };
   }
-
-  // Tool call: **Using tool:** `ToolName`
-  const toolMatch = content.match(/\*\*Using tool:\*\*\s*`([^`]+)`/);
-  if (toolMatch) {
-    const raw = toolMatch[1];
-    const clean = raw.replace(/^mcp__[^_]+__/, '');
-    // Extract summary (file path, command, etc.)
-    const fileMatch = content.match(/'file_path':\s*'([^']+)'/);
-    const cmdMatch = content.match(/'command':\s*'([^']+)'/);
-    const summary = fileMatch?.[1] || cmdMatch?.[1]?.slice(0, 60) || '';
-    return { type: 'tool_call', label: summary ? `${clean} › ${summary}` : clean };
-  }
-
-  // Codex: **Running:** `command`
-  const runMatch = content.match(/\*\*Running:\*\*\s*`([^`]+)`/);
-  if (runMatch) {
-    return { type: 'tool_call', label: `Bash › ${runMatch[1].slice(0, 60)}` };
-  }
-
-  // Codex: **Editing:** `filename`
-  const editMatch = content.match(/\*\*Editing:\*\*\s*`([^`]+)`/);
-  if (editMatch) {
-    return { type: 'tool_call', label: `Edit › ${editMatch[1]}` };
-  }
-
-  // Compacting
-  if (/compact/i.test(content)) {
-    return { type: 'compacting', label: 'Vibing...' };
-  }
-
-  // General status
-  return { type: 'status', label: content.replace(/\n+/g, ' ').trim().slice(0, 80) };
+  const p = parseToolStep(msg.content);
+  if (p.type === 'compacting') return { type: 'compacting', label: 'Vibing...' };
+  return { type: p.type, label: toolStepLabel(p) };
 }
 
 const STEP_ICONS: Record<string, typeof Wrench> = {

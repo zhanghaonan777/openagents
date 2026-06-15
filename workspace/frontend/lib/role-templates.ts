@@ -3,7 +3,7 @@
  *
  * Source: VoltAgent/awesome-claude-code-subagents (~154 professional roles
  * across 10 categories). The role list lives in the auto-generated
- * `role-templates.data.ts` (regenerate with scripts/gen-roles, do not hand-edit);
+ * `role-templates.data.ts` (regenerate with `scripts/gen-roles.py`, do not hand-edit);
  * categories, model badges and helpers are defined here.
  *
  * This is a frontend-only catalog — the OpenAgents backend models agents by

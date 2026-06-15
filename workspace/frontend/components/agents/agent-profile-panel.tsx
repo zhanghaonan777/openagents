@@ -12,19 +12,19 @@ import { cn } from '@/lib/utils';
 import { toast } from 'sonner';
 import { timeAgoShort as timeAgo } from '@/lib/helpers';
 import { taskRequestText, taskArtifactText, taskStatusMeta, stripDelegationPlumbing } from '@/lib/a2a';
-import type { CloudAgentConfig, WorkspaceMessage } from '@/lib/types';
+import { MESSAGE_TYPE, type CloudAgentConfig, type WorkspaceMessage } from '@/lib/types';
 
 /** Classify one session event into a typed, labelled timeline entry. */
 type ActivityKey = 'tool' | 'thinking' | 'delegate' | 'message';
 function activityKind(m: WorkspaceMessage): { key: ActivityKey; label: string; chip: string; detail: string } {
   const content = m.content || '';
-  if (m.messageType === 'thinking') {
+  if (m.messageType === MESSAGE_TYPE.THINKING) {
     return { key: 'thinking', label: 'Thinking', chip: 'text-violet-700 bg-violet-500/12 dark:text-violet-300', detail: content };
   }
-  if (m.messageType === 'delegate') {
+  if (m.messageType === MESSAGE_TYPE.DELEGATE) {
     return { key: 'delegate', label: 'Delegate', chip: 'text-indigo-700 bg-indigo-500/12 dark:text-indigo-300', detail: content };
   }
-  if (m.messageType === 'status') {
+  if (m.messageType === MESSAGE_TYPE.STATUS) {
     // Claude Code tool calls arrive as status lines like "Bash › <cmd>" / "Write › <path>".
     const i = content.indexOf('›');
     const tool = i > 0 ? content.slice(0, i).trim() : 'Tool';
@@ -294,7 +294,8 @@ export function AgentProfilePanel() {
                 const session = [...activity]
                   .filter((m) => {
                     const c = (m.content || '').trim();
-                    return c && c !== 'thinking...';
+                    // Keep real session output; drop the launcher's "thinking..." status placeholder.
+                    return c && !(m.messageType === MESSAGE_TYPE.STATUS && c === 'thinking...');
                   })
                   .reverse();
                 if (activityLoading && session.length === 0) {

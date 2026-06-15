@@ -8,6 +8,7 @@ import { workspaceApi } from '@/lib/api';
 import { AgentAvatar } from '@/components/agents/agent-avatar';
 import { CreateRoutineDialog } from './create-routine-dialog';
 import type { RoutineItem } from '@/lib/types';
+import { timeAgoShort as timeAgo } from '@/lib/helpers';
 
 const DAY_NAMES = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 
@@ -29,18 +30,6 @@ function formatSchedule(r: RoutineItem): string {
   }
   const dayLabels = r.scheduleDays.map((d) => DAY_NAMES[d] || `${d}`).join(', ');
   return `${dayLabels} at ${time}`;
-}
-
-function timeAgo(dateStr: string | null): string {
-  if (!dateStr) return 'never';
-  const diff = Date.now() - new Date(dateStr).getTime();
-  const mins = Math.floor(diff / 60000);
-  if (mins < 1) return 'just now';
-  if (mins < 60) return `${mins}m ago`;
-  const hours = Math.floor(mins / 60);
-  if (hours < 24) return `${hours}h ago`;
-  const days = Math.floor(hours / 24);
-  return `${days}d ago`;
 }
 
 function timeUntil(dateStr: string): string {

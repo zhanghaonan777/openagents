@@ -59,6 +59,20 @@ export interface WorkspaceSession {
   lastEventAt: number | null; // unix ms timestamp of last message
 }
 
+/** Kinds of workspace message. `chat` = visible reply; `thinking`/`status`/
+ *  `todos` = intermediate agent output; `delegate` = an A2A kick-off; `join` =
+ *  the "X joined" system line; `loading` = an optimistic client placeholder. */
+export const MESSAGE_TYPE = {
+  CHAT: 'chat',
+  THINKING: 'thinking',
+  STATUS: 'status',
+  TODOS: 'todos',
+  DELEGATE: 'delegate',
+  JOIN: 'join',
+  LOADING: 'loading',
+} as const;
+export type MessageType = (typeof MESSAGE_TYPE)[keyof typeof MESSAGE_TYPE];
+
 export interface WorkspaceMessage {
   messageId: string;
   sessionId: string;
@@ -68,7 +82,7 @@ export interface WorkspaceMessage {
   content: string;
   mentions: string[];
   targetAgents: string[] | null;
-  messageType: string;
+  messageType: MessageType;
   metadata: Record<string, unknown>;
   createdAt: string | null;
 }
@@ -461,7 +475,7 @@ export function eventToMessage(event: ONMEvent): WorkspaceMessage {
     content: (payload.content as string) || '',
     mentions: (payload.mentions as string[]) || [],
     targetAgents: (event.metadata?.target_agents as string[]) || null,
-    messageType: (payload.message_type as string) || 'chat',
+    messageType: (payload.message_type as MessageType) || MESSAGE_TYPE.CHAT,
     metadata: {
       ...(event.metadata || {}),
       ...(payload.attachments ? { attachments: payload.attachments } : {}),

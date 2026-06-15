@@ -5,7 +5,7 @@ import { Button } from '@/components/ui/button';
 import { Copy, Check, User, FileIcon, Download, Eye, ListTodo } from 'lucide-react';
 import { toast } from 'sonner';
 import { memo, useCallback, useMemo, useState } from 'react';
-import type { WorkspaceMessage, WorkspaceAgent, A2ATask } from '@/lib/types';
+import { MESSAGE_TYPE, type WorkspaceMessage, type WorkspaceAgent, type A2ATask } from '@/lib/types';
 import { AgentAvatar } from '@/components/agents/agent-avatar';
 import { MarkdownContent } from './markdown-content';
 import { workspaceApi } from '@/lib/api';
@@ -147,9 +147,9 @@ export const ChatMessage = memo(function ChatMessage({ message, agents = [] }: C
   const { currentUser, a2aTasks } = useWorkspace();
   const { setViewMode, setFlashTaskId } = useLayout();
   const isHuman = message.senderType === 'human' || message.senderType === 'user';
-  const isSystem = message.messageType === 'status';
-  const isJoin = message.messageType === 'join';
-  const isDelegate = message.messageType === 'delegate';
+  const isSystem = message.messageType === MESSAGE_TYPE.STATUS;
+  const isJoin = message.messageType === MESSAGE_TYPE.JOIN;
+  const isDelegate = message.messageType === MESSAGE_TYPE.DELEGATE;
   const [copied, setCopied] = useState(false);
 
   // A delegate kick-off embeds an internal "[A2A delegation · task …]" instruction

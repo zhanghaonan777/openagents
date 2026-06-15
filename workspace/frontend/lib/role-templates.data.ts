@@ -1,5 +1,5 @@
 /* AUTO-GENERATED from VoltAgent/awesome-claude-code-subagents (154 roles, 10 categories).
-   Regenerate with /tmp/gen_roles.py — do not edit by hand. */
+   Regenerate with scripts/gen-roles.py — do not edit by hand. */
 import type { RoleTemplate } from './role-templates';
 
 export const ROLE_TEMPLATES: RoleTemplate[] = [
