@@ -92,6 +92,12 @@ parallel**, then collect the artifacts — don't wait on them one after another.
 If `wait` times out the task is returned in its current (non-terminal) state;
 poll `tasks/get` to follow up.
 
+**Use `wait` — do NOT write your own polling loop.** One call with `wait`
+blocks for you and returns the result; hand-rolling a `for … tasks/get … sleep`
+loop just clutters the chat. And when you have the result, reply to the user
+with a **clean, finished answer** that synthesizes it — don't paste your `curl`
+commands or a play-by-play of the delegation into the chat.
+
 ## 3. Work the tasks assigned to YOU (you are the contractor)
 
 Poll for tasks delegated to you that you haven't started:
