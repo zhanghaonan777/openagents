@@ -35,7 +35,7 @@ function activityKind(m: WorkspaceMessage): { key: ActivityKey; label: string; c
 
 export function AgentProfilePanel() {
   const { selectedAgentName, setSelectedAgentName, setViewMode, setFlashTaskId, openMobileDetail } = useLayout();
-  const { agents, refreshWorkspace, createSession, a2aTasks, setCurrentSessionId } = useWorkspace();
+  const { agents, refreshWorkspace, createSession, a2aTasks, refreshA2ATasks, setCurrentSessionId } = useWorkspace();
   const { isCopied, copyToClipboard } = useCopyToClipboard();
 
   const agent = agents.find((a) => a.agentName === selectedAgentName);
@@ -47,23 +47,49 @@ export function AgentProfilePanel() {
   const [activity, setActivity] = useState<WorkspaceMessage[]>([]);
   const [activityLoading, setActivityLoading] = useState(false);
 
+  // Fetch the agent's session activity on open, then live-poll it (silent) so the
+  // timeline stays current while the panel is open.
   useEffect(() => {
     setTab('activity');
     if (!selectedAgentName) { setActivity([]); return; }
     let alive = true;
-    setActivityLoading(true);
-    workspaceApi.getAgentActivity(selectedAgentName)
-      .then((r) => { if (alive) setActivity(r.messages); })
-      .catch(() => { if (alive) setActivity([]); })
-      .finally(() => { if (alive) setActivityLoading(false); });
-    return () => { alive = false; };
+    const load = (spinner: boolean) => {
+      if (spinner) setActivityLoading(true);
+      workspaceApi.getAgentActivity(selectedAgentName)
+        .then((r) => { if (alive) setActivity(r.messages); })
+        .catch(() => { if (alive && spinner) setActivity([]); })  // keep last good data on a transient poll error
+        .finally(() => { if (alive) setActivityLoading(false); });
+    };
+    load(true);
+    const id = setInterval(() => load(false), 5000);
+    return () => { alive = false; clearInterval(id); };
   }, [selectedAgentName]);
 
-  // Auto-scroll the session timeline to the latest entry (it reads oldest → newest).
-  const activityEndRef = useRef<HTMLDivElement | null>(null);
+  // Keep this agent's A2A tasks fresh while the panel is open.
   useEffect(() => {
-    if (tab === 'activity') activityEndRef.current?.scrollIntoView({ block: 'end' });
-  }, [tab, activity]);
+    if (!selectedAgentName) return;
+    refreshA2ATasks();
+    const id = setInterval(refreshA2ATasks, 5000);
+    return () => clearInterval(id);
+  }, [selectedAgentName, refreshA2ATasks]);
+
+  // Auto-scroll the session timeline (oldest → newest), but stick to the bottom
+  // only when the user is already there — never hijack an upward scroll.
+  const activityScrollRef = useRef<HTMLDivElement | null>(null);
+  const activityEndRef = useRef<HTMLDivElement | null>(null);
+  const stickToBottomRef = useRef(true);
+  const onActivityScroll = useCallback(() => {
+    const el = activityScrollRef.current;
+    if (el) stickToBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 60;
+  }, []);
+  // Snap to bottom when the Activity tab opens or the agent changes.
+  useEffect(() => {
+    if (tab === 'activity') { stickToBottomRef.current = true; activityEndRef.current?.scrollIntoView({ block: 'end' }); }
+  }, [tab, selectedAgentName]);
+  // Follow the tail on new polled activity only if still pinned to the bottom.
+  useEffect(() => {
+    if (tab === 'activity' && stickToBottomRef.current) activityEndRef.current?.scrollIntoView({ block: 'end' });
+  }, [activity, tab]);
 
   const agentNames = agents.map((a) => a.agentName);
 
@@ -288,7 +314,7 @@ export function AgentProfilePanel() {
 
           {/* Activity — the full Claude Code session process, oldest → newest, tagged by kind */}
           {tab === 'activity' && (
-            <div className="flex-1 overflow-y-auto">
+            <div ref={activityScrollRef} onScroll={onActivityScroll} className="flex-1 overflow-y-auto">
               {(() => {
                 // Ascending timeline; drop the launcher's "thinking..." status placeholders.
                 const session = [...activity]

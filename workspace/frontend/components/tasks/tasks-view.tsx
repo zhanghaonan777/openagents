@@ -65,8 +65,11 @@ export function TasksView() {
   const { a2aTasks, refreshA2ATasks } = useWorkspace();
   const { flashTaskId, setSelectedAgentName } = useLayout();
 
+  // Keep the board live while it's open (tasks are driven by agents elsewhere).
   useEffect(() => {
     refreshA2ATasks();
+    const id = setInterval(refreshA2ATasks, 5000);
+    return () => clearInterval(id);
   }, [refreshA2ATasks]);
 
   const totalActive = a2aTasks.filter((t) => t.state === 'submitted' || t.state === 'working').length;
