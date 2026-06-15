@@ -165,6 +165,8 @@ export function WorkspaceProvider({
   currentUserRef.current = currentUser;
   const [onlineUsers, setOnlineUsers] = useState<OnlineUser[]>([]);
   const [sessions, setSessions] = useState<WorkspaceSession[]>([]);
+  const sessionsRef = useRef(sessions);
+  sessionsRef.current = sessions;
   const [currentSessionId, _setCurrentSessionId] = useState<string | null>(null);
   // Set by setCurrentSessionId({ skipFocus: true }) and consumed by ChatView's
   // auto-focus effect, so keyboard-driven thread switches (1-9) don't steal
@@ -546,7 +548,7 @@ export function WorkspaceProvider({
             const newInactive = new Set<string>();
             for (const [sid, info] of Object.entries(batch)) {
               const wasStatus = prev[sid]?.isStatus;
-              const isStopping = stoppingSessionIds.has(sid);
+              const isStopping = stoppingSessionIdsRef.current.has(sid);
               if (info.isStatus) {
                 if (isStopping) {
                   if (/stopped|stopping failed/i.test(info.content)) {
@@ -611,7 +613,9 @@ export function WorkspaceProvider({
     } catch {
       // Non-critical — keep existing state
     }
-  }, [workspaceId, stoppingSessionIds]);
+    // Reads stoppingSessionIds via its ref (not the closure), so the poll loop
+    // isn't torn down and rebuilt on every stop-state change.
+  }, [workspaceId]);
 
   // Alias for backward compat
   const refreshAgents = refreshDiscovery;
@@ -998,8 +1002,9 @@ export function WorkspaceProvider({
   }, []);
 
   const updateSession = useCallback(async (sessionId: string, updates: { starred?: boolean; status?: string }) => {
-    // Capture previous state for rollback
-    const previousSession = sessions.find((s) => s.sessionId === sessionId);
+    // Read the freshest sessions via a ref so two updates in the same tick don't
+    // each act on a stale snapshot (e.g. archiving two threads quickly).
+    const previousSession = sessionsRef.current.find((s) => s.sessionId === sessionId);
     // Optimistic update
     setSessions((prev) =>
       prev.map((s) => (s.sessionId === sessionId ? { ...s, ...updates } : s))
@@ -1008,7 +1013,7 @@ export function WorkspaceProvider({
     const previousSessionId = currentSessionId;
     if (updates.status === 'deleted' || updates.status === 'archived') {
       if (currentSessionId === sessionId) {
-        const remaining = sessions.filter((s) => s.sessionId !== sessionId && s.status === 'active');
+        const remaining = sessionsRef.current.filter((s) => s.sessionId !== sessionId && s.status === 'active');
         setCurrentSessionId(remaining.length > 0 ? remaining[0].sessionId : null);
       }
     }
@@ -1025,7 +1030,7 @@ export function WorkspaceProvider({
         }
       }
     }
-  }, [currentSessionId, sessions]);
+  }, [currentSessionId]);
 
   const addParticipant = useCallback(async (sessionId: string, agentName: string) => {
     // Optimistic update
