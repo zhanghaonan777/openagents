@@ -29,10 +29,13 @@ function DelegateTaskCard({ task, onJump }: { task: A2ATask; onJump: () => void 
   const terminal = ['completed', 'failed', 'canceled', 'rejected'].includes(task.state);
   const artifact = taskArtifactText(task);
   return (
-    <button
+    <div
+      role="button"
+      tabIndex={0}
       onClick={onJump}
+      onKeyDown={(e) => { if (e.key === 'Enter') onJump(); }}
       style={{ borderLeftColor: c }}
-      className="block w-full mt-2 p-3 rounded-xl bg-background border border-border border-l-[3px] shadow-xs text-left transition-all hover:-translate-y-px hover:shadow-[0_4px_14px_-6px_rgba(20,20,40,0.14)]"
+      className="w-full mt-2 p-3 rounded-xl bg-background border border-border border-l-[3px] shadow-xs cursor-pointer transition-all hover:-translate-y-px hover:shadow-[0_4px_14px_-6px_rgba(20,20,40,0.14)]"
     >
       <div className="flex items-center gap-2.5">
         <AgentAvatar name={who} size={22} className="shrink-0" />
@@ -62,7 +65,7 @@ function DelegateTaskCard({ task, onJump }: { task: A2ATask; onJump: () => void 
           <span className="text-emerald-600 dark:text-emerald-400 font-semibold">Result · </span>{artifact}
         </p>
       )}
-    </button>
+    </div>
   );
 }
 

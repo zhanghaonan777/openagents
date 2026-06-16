@@ -14,13 +14,15 @@ export interface ActivityMeta {
   failure: boolean;
 }
 
-// Heuristic: does this step look like a failure/error? (kept tight to avoid
-// flagging prose that merely mentions "errors").
-const FAIL_RE = /(✗|❌|\b(failed|error|errored|exception|denied|rejected)\b|interrupted)/i;
+// Heuristic: does this step look like a failure? Match a ✗/❌ marker anywhere,
+// or a failure word at the very START of the line — so prose that merely
+// mentions "errors" mid-sentence ("no errors found", "the build failed earlier
+// but is fixed") is NOT flagged. Thinking (reasoning) is never a failure.
+const FAIL_RE = /✗|❌|^[\s>*_•\-]*(error|errored|exception|fail(ed|ure)?|denied|rejected)\b/i;
 
 export function classifyActivity(m: WorkspaceMessage): ActivityMeta {
   const content = m.content || '';
-  const failure = FAIL_RE.test(content);
+  const failure = m.messageType !== MESSAGE_TYPE.THINKING && FAIL_RE.test(content);
   if (m.messageType === MESSAGE_TYPE.THINKING) {
     return { key: 'thinking', label: 'Thinking', detail: content, dot: '#8b5cf6', chip: 'text-violet-700 bg-violet-500/12 dark:text-violet-300', failure: false };
   }

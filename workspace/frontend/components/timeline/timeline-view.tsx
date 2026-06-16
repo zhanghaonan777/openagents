@@ -49,14 +49,12 @@ export function TimelineView() {
       if (!c || c === 'thinking...') continue;  // drop the launcher placeholder
       (byAgent[m.senderName] ??= []).push({ m, meta: classifyActivity(m) });
     }
+    // Stable order by name so lanes don't jump around on each poll; "working"
+    // is conveyed by the pulse dot, not by position.
     return Object.entries(byAgent)
       .map(([name, list]) => ({ name, list: list.slice(-40) }))
-      .sort((a, b) => {
-        const aw = teamActivity[a.name]?.working ? 1 : 0;
-        const bw = teamActivity[b.name]?.working ? 1 : 0;
-        return aw !== bw ? bw - aw : a.name.localeCompare(b.name);   // working first, then stable
-      });
-  }, [events, teamActivity]);
+      .sort((a, b) => a.name.localeCompare(b.name));
+  }, [events]);
 
   const failureCount = lanes.reduce((n, l) => n + l.list.filter((s) => s.meta.failure).length, 0);
   const workingCount = lanes.filter((l) => teamActivity[l.name]?.working).length;
