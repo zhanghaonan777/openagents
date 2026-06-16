@@ -5,7 +5,35 @@ import { workspaceApi } from './api';
 import { capture } from './analytics';
 import { useOpenAgentsAuth } from './openagents-auth-context';
 import { generateUserId, getStoredIdentity, storeIdentity } from './identity';
-import { networkAgentToWorkspaceAgent, networkChannelToSession } from './types';
+import { networkAgentToWorkspaceAgent, networkChannelToSession, eventToMessage } from './types';
+
+/** Live "what is each agent doing right now" — derived from the newest events. */
+export interface TeamStatus { working: boolean; label: string }
+function deriveTeamActivity(events: import('./types').ONMEvent[]): Record<string, TeamStatus> {
+  const now = Date.now();
+  const next: Record<string, TeamStatus> = {};
+  for (const e of events) {
+    const m = eventToMessage(e);
+    if (m.senderType !== 'agent' || next[m.senderName]) continue;  // first hit = latest for this agent
+    const recent = now - new Date(m.createdAt || 0).getTime() < 30000;
+    if (recent && m.messageType === 'thinking') {
+      next[m.senderName] = { working: true, label: 'thinking…' };
+    } else if (recent && m.messageType === 'status') {
+      const c = (m.content || '').trim();
+      if (c === 'thinking...' || c === '') {
+        next[m.senderName] = { working: true, label: 'thinking…' };
+      } else {
+        const i = c.indexOf('›');  // launcher tool lines are "Bash › <detail>"
+        const tool = i > 0 ? c.slice(0, i).trim() : 'Tool';
+        const detail = (i > 0 ? c.slice(i + 1).trim() : c).slice(0, 32);
+        next[m.senderName] = { working: true, label: `${tool} › ${detail}` };
+      }
+    } else {
+      next[m.senderName] = { working: false, label: '' };
+    }
+  }
+  return next;
+}
 import type { A2ATask, BrowserPersistentContext, BrowserTab, DMConversation, KnowledgeEntry, NotificationItem, OnlineUser, RoutineItem, TodoItem, Workspace, WorkspaceAgent, WorkspaceFile, WorkspaceIdentity, WorkspaceSession } from './types';
 
 function useWorkspaceIdentity() {
@@ -112,6 +140,8 @@ interface WorkspaceContextValue {
   refreshA2ATasks: () => Promise<void>;
   createA2ATask: (contractor: string, text: string, skillId?: string) => Promise<void>;
   cancelA2ATask: (taskId: string) => Promise<void>;
+  // Live per-agent activity ("what is each agent doing right now")
+  teamActivity: Record<string, TeamStatus>;
   routines: RoutineItem[];
   refreshRoutines: () => Promise<void>;
   createRoutine: (params: {
@@ -207,6 +237,7 @@ export function WorkspaceProvider({
   const [dmConversations, setDMConversations] = useState<DMConversation[]>([]);
   const [todos, setTodos] = useState<TodoItem[]>([]);
   const [a2aTasks, setA2ATasks] = useState<A2ATask[]>([]);
+  const [teamActivity, setTeamActivity] = useState<Record<string, TeamStatus>>({});
   const [routines, setRoutines] = useState<RoutineItem[]>([]);
   const [knowledge, setKnowledge] = useState<KnowledgeEntry[]>([]);
   const [notifications, setNotifications] = useState<NotificationItem[]>([]);
@@ -662,6 +693,22 @@ export function WorkspaceProvider({
     await workspaceApi.cancelA2ATask(taskId);
     await refreshA2ATasks();
   }, [refreshA2ATasks]);
+
+  // Live "team status": poll the newest events workspace-wide and derive what
+  // each agent is doing right now (working + current tool/step), so the sidebar
+  // shows the team working in parallel at a glance.
+  useEffect(() => {
+    if (!workspaceId) return;
+    let alive = true;
+    const tick = () => {
+      workspaceApi.pollEvents({ type: 'workspace.message', sort: 'desc', limit: 80 })
+        .then((r) => { if (alive) setTeamActivity(deriveTeamActivity(r.events)); })
+        .catch(() => {});
+    };
+    tick();
+    const id = setInterval(tick, 4000);
+    return () => { alive = false; clearInterval(id); };
+  }, [workspaceId]);
 
   const refreshRoutines = useCallback(async () => {
     try {
@@ -1174,6 +1221,7 @@ export function WorkspaceProvider({
         refreshTodos,
         a2aTasks,
         refreshA2ATasks,
+        teamActivity,
         createA2ATask,
         cancelA2ATask,
         routines,

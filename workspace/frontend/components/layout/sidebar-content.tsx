@@ -71,7 +71,7 @@ function NavButton({
 
 export function SidebarContent() {
   const { isSidebarOpen, sidebarToggle, viewMode, setViewMode, setSelectedAgentName, openRoleLibrary } = useLayout();
-  const { agents, sessions, files, browserTabs, createSession, workspace, token, refreshWorkspace, todos, routines, knowledge, currentUser, onlineUsers, unreadNotificationCount } = useWorkspace();
+  const { agents, sessions, files, browserTabs, createSession, workspace, token, refreshWorkspace, todos, routines, knowledge, currentUser, onlineUsers, unreadNotificationCount, teamActivity, a2aTasks } = useWorkspace();
   const { user, isOpenAgentsDomain, signIn, signOut } = useOpenAgentsAuth();
   const { theme, setTheme } = useTheme();
   const [mounted, setMounted] = useState(false);
@@ -109,6 +109,8 @@ export function SidebarContent() {
   const recentAgents = useMemo(() => agents.filter(isRecentAgent), [agents]);
   const onlineCount = agents.filter((a) => a.status === 'online').length;
   const agentNames = agents.map((a) => a.agentName);
+  const workingCount = recentAgents.filter((a) => teamActivity[a.agentName]?.working).length;
+  const tasksInProgress = a2aTasks.filter((t) => t.state === 'submitted' || t.state === 'working').length;
 
   const isUnclaimed = workspace && !workspace.creatorEmail;
   const isOwnedByUser = workspace && user && workspace.creatorEmail === user.email;
@@ -231,24 +233,48 @@ export function SidebarContent() {
             </button>
           </div>
 
-          {/* Agents */}
+          {/* Agents — live team status */}
           <div className="px-2.5">
-            <p className="text-xs font-normal text-muted-foreground px-2 py-1.5 mb-0.5">
-              Agents ({onlineCount}/{recentAgents.length})
+            <p className="text-xs font-normal text-muted-foreground px-2 py-1.5 mb-0.5 flex items-center gap-1.5">
+              <span>Agents ({onlineCount}/{recentAgents.length})</span>
+              {(workingCount > 0 || tasksInProgress > 0) && (
+                <span className="ml-auto text-[10px] font-medium text-blue-500 inline-flex items-center gap-1">
+                  {workingCount > 0 && (
+                    <span className="inline-flex items-center gap-1">
+                      <span className="size-1.5 rounded-full bg-blue-500 animate-pulse" />
+                      {workingCount} working
+                    </span>
+                  )}
+                  {workingCount > 0 && tasksInProgress > 0 && <span className="text-muted-foreground/50">·</span>}
+                  {tasksInProgress > 0 && <span>{tasksInProgress} task{tasksInProgress > 1 ? 's' : ''}</span>}
+                </span>
+              )}
             </p>
-            <div className="space-y-0.5 max-h-48 overflow-y-auto">
-              {recentAgents.map((agent) => (
-                <button
-                  key={agent.agentName}
-                  onClick={() => setSelectedAgentName(agent.agentName)}
-                  className="w-full flex items-center gap-2 px-2 h-8 rounded-lg hover:bg-zinc-100 dark:hover:bg-zinc-800 cursor-pointer group transition-colors"
-                >
-                  <AgentAvatar name={agent.agentName} size={20} status={agent.status} showStatus />
-                  <span className="text-[13px] font-normal text-foreground group-hover:text-primary truncate text-left">
-                    {agent.agentName}
-                  </span>
-                </button>
-              ))}
+            <div className="space-y-0.5 max-h-56 overflow-y-auto">
+              {recentAgents.map((agent) => {
+                const act = teamActivity[agent.agentName];
+                const working = !!act?.working;
+                return (
+                  <button
+                    key={agent.agentName}
+                    onClick={() => setSelectedAgentName(agent.agentName)}
+                    className="w-full flex items-start gap-2 px-2 py-1.5 rounded-lg hover:bg-zinc-100 dark:hover:bg-zinc-800 cursor-pointer group transition-colors text-left"
+                  >
+                    <AgentAvatar name={agent.agentName} size={20} status={agent.status} showStatus className="mt-px shrink-0" />
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-[13px] font-normal text-foreground group-hover:text-primary truncate">
+                          {agent.agentName}
+                        </span>
+                        {working && <span className="size-1.5 rounded-full bg-blue-500 animate-pulse shrink-0" title="working" />}
+                      </div>
+                      {working && act?.label && (
+                        <div className="text-[10px] text-blue-500/80 font-mono truncate leading-tight">{act.label}</div>
+                      )}
+                    </div>
+                  </button>
+                );
+              })}
               <button
                 onClick={openRoleLibrary}
                 className="w-full flex items-center gap-2 px-2 h-8 rounded-lg text-[13px] text-primary hover:bg-primary/10 transition-colors"
