@@ -13,25 +13,7 @@ import { toast } from 'sonner';
 import { timeAgoShort as timeAgo } from '@/lib/helpers';
 import { taskRequestText, taskArtifactText, taskStatusMeta, stripDelegationPlumbing } from '@/lib/a2a';
 import { MESSAGE_TYPE, type CloudAgentConfig, type WorkspaceMessage } from '@/lib/types';
-
-/** Classify one session event into a typed, labelled timeline entry. */
-type ActivityKey = 'tool' | 'thinking' | 'delegate' | 'message';
-function activityKind(m: WorkspaceMessage): { key: ActivityKey; label: string; chip: string; detail: string } {
-  const content = m.content || '';
-  if (m.messageType === MESSAGE_TYPE.THINKING) {
-    return { key: 'thinking', label: 'Thinking', chip: 'text-violet-700 bg-violet-500/12 dark:text-violet-300', detail: content };
-  }
-  if (m.messageType === MESSAGE_TYPE.DELEGATE) {
-    return { key: 'delegate', label: 'Delegate', chip: 'text-indigo-700 bg-indigo-500/12 dark:text-indigo-300', detail: content };
-  }
-  if (m.messageType === MESSAGE_TYPE.STATUS) {
-    // Claude Code tool calls arrive as status lines like "Bash › <cmd>" / "Write › <path>".
-    const i = content.indexOf('›');
-    const tool = i > 0 ? content.slice(0, i).trim() : 'Tool';
-    return { key: 'tool', label: tool || 'Tool', chip: 'text-amber-700 bg-amber-500/14 dark:text-amber-300', detail: i > 0 ? content.slice(i + 1).trim() : content };
-  }
-  return { key: 'message', label: 'Message', chip: 'text-sky-700 bg-sky-500/12 dark:text-sky-300', detail: content };
-}
+import { classifyActivity } from '@/lib/agent-activity';
 
 export function AgentProfilePanel() {
   const { selectedAgentName, setSelectedAgentName, setViewMode, setFlashTaskId, openMobileDetail } = useLayout();
@@ -335,7 +317,7 @@ export function AgentProfilePanel() {
                 return (
                   <div className="divide-y">
                     {session.map((m) => {
-                      const k = activityKind(m);
+                      const k = classifyActivity(m);
                       const Icon = k.key === 'tool' ? Terminal : k.key === 'thinking' ? Brain : k.key === 'delegate' ? Send : MessageSquare;
                       // Hide internal A2A kick-off plumbing, same as the chat view.
                       const text = stripDelegationPlumbing(m.content);

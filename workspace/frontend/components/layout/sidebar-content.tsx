@@ -3,7 +3,7 @@
 import { useState, useEffect, useMemo } from 'react';
 import {
   Plus, MessageSquare, FileText, Globe, PlusSquare, Sparkles, BookOpen,
-  Settings, Copy, Check, ListTodo, CalendarClock, Inbox,
+  Settings, Copy, Check, ListTodo, CalendarClock, Inbox, Activity,
   LogIn, LogOut, Shield, Moon, Sun, KeyRound, X, Crown, Users,
 } from 'lucide-react';
 import { useTheme } from 'next-themes';
@@ -322,6 +322,7 @@ export function SidebarContent() {
                   <NavButton active={viewMode === 'routines'} icon={<CalendarClock className="size-[15px]" />} label="Routines" count={routines.filter((r) => r.status === 'active').length} onClick={() => setViewMode('routines')} />
                   <NavButton active={viewMode === 'knowledge'} icon={<BookOpen className="size-[15px]" />} label="Knowledge" count={knowledge.length} onClick={() => setViewMode('knowledge')} />
                   <NavButton active={viewMode === 'tasks'} icon={<ListTodo className="size-[15px]" />} label="Tasks" count={todos.filter((t) => t.status === 'pending' || t.status === 'in_progress').length} onClick={() => setViewMode('tasks')} />
+                  <NavButton active={viewMode === 'timeline'} icon={<Activity className="size-[15px]" />} label="Timeline" count={workingCount > 0 ? workingCount : undefined} onClick={() => setViewMode('timeline')} />
                   <NavButton active={viewMode === 'inbox'} icon={<Inbox className="size-[15px]" />} label="Inbox" count={unreadNotificationCount > 0 ? unreadNotificationCount : undefined} onClick={() => setViewMode('inbox')} />
                   <NavButton active={viewMode === 'skills'} icon={<Sparkles className="size-[15px]" />} label="Skill Hub" onClick={() => setViewMode('skills')} />
                 </>
