@@ -696,13 +696,18 @@ export function WorkspaceProvider({
 
   // Live "team status": poll the newest events workspace-wide and derive what
   // each agent is doing right now (working + current tool/step), so the sidebar
-  // shows the team working in parallel at a glance.
+  // shows the team working in parallel at a glance. Also keep a2aTasks fresh
+  // globally so delegate cards in the chat update live (agents drive tasks via
+  // the gateway, not the UI).
   useEffect(() => {
     if (!workspaceId) return;
     let alive = true;
     const tick = () => {
       workspaceApi.pollEvents({ type: 'workspace.message', sort: 'desc', limit: 80 })
         .then((r) => { if (alive) setTeamActivity(deriveTeamActivity(r.events)); })
+        .catch(() => {});
+      workspaceApi.listA2ATasks()
+        .then((r) => { if (alive) setA2ATasks(r.tasks); })
         .catch(() => {});
     };
     tick();

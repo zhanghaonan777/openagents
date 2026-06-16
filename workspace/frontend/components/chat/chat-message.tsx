@@ -2,7 +2,7 @@
 
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
-import { Copy, Check, User, FileIcon, Download, Eye, ListTodo } from 'lucide-react';
+import { Copy, Check, User, FileIcon, Download, Eye } from 'lucide-react';
 import { toast } from 'sonner';
 import { memo, useCallback, useMemo, useState } from 'react';
 import { MESSAGE_TYPE, type WorkspaceMessage, type WorkspaceAgent, type A2ATask } from '@/lib/types';
@@ -12,29 +12,56 @@ import { workspaceApi } from '@/lib/api';
 import { useLayout } from '@/components/layout/layout-context';
 import { useWorkspace } from '@/lib/workspace-context';
 import { colorFromName, roleTemplateByName } from '@/lib/role-templates';
-import { taskRequestText, taskStatusMeta, stripDelegationPlumbing } from '@/lib/a2a';
+import { taskRequestText, taskArtifactText, taskStatusMeta, stripDelegationPlumbing } from '@/lib/a2a';
 import { CategoryChip } from '@/components/agents/role-library';
 
-/** A2A task card mounted under a `delegate` chat message — jumps to the board. */
+const TASK_PROGRESS: Record<string, number> = {
+  submitted: 0.15, working: 0.6, 'input-required': 0.82,
+  completed: 1, failed: 1, canceled: 1, rejected: 1,
+};
+
+/** Live A2A delegation card under a `delegate` chat message — shows the
+ *  contractor working through the task right in the conversation. */
 function DelegateTaskCard({ task, onJump }: { task: A2ATask; onJump: () => void }) {
   const who = task.contractorName;
   const c = colorFromName(who);
   const status = taskStatusMeta(task.state);
+  const terminal = ['completed', 'failed', 'canceled', 'rejected'].includes(task.state);
+  const artifact = taskArtifactText(task);
   return (
     <button
       onClick={onJump}
       style={{ borderLeftColor: c }}
-      className="flex items-center gap-3 w-full mt-2 p-3 rounded-xl bg-background border border-border border-l-[3px] shadow-xs text-left transition-all hover:-translate-y-px hover:shadow-[0_4px_14px_-6px_rgba(20,20,40,0.14)]"
+      className="block w-full mt-2 p-3 rounded-xl bg-background border border-border border-l-[3px] shadow-xs text-left transition-all hover:-translate-y-px hover:shadow-[0_4px_14px_-6px_rgba(20,20,40,0.14)]"
     >
-      <ListTodo className="size-[15px] shrink-0" style={{ color: c }} />
-      <div className="flex-1 min-w-0">
-        <div className="text-[12.5px] font-semibold truncate">{taskRequestText(task)}</div>
-        <div className="text-[11px] text-muted-foreground mt-0.5">
-          A2A task · {who} ·{' '}
-          <span className={cn('font-semibold', status.cls)}>{status.label}</span>
+      <div className="flex items-center gap-2.5">
+        <AgentAvatar name={who} size={22} className="shrink-0" />
+        <div className="flex-1 min-w-0">
+          <div className="text-[12.5px] font-semibold truncate">{taskRequestText(task)}</div>
+          <div className="text-[11px] text-muted-foreground mt-0.5 flex items-center gap-1.5">
+            <span className="font-medium text-foreground/80 truncate">{who}</span>
+            <span className="text-muted-foreground/50">·</span>
+            <span className={cn('font-semibold inline-flex items-center gap-1 shrink-0', status.cls)}>
+              {!terminal && <span className="size-1.5 rounded-full animate-pulse" style={{ background: status.dot }} />}
+              {status.label}
+            </span>
+          </div>
         </div>
+        <span className="text-[11.5px] font-semibold text-primary shrink-0">Board →</span>
       </div>
-      <span className="text-[11.5px] font-semibold text-primary shrink-0">Board →</span>
+      {/* Progress bar — fills as the contractor drives the task */}
+      <div className="mt-2 h-1 rounded-full bg-muted overflow-hidden">
+        <div
+          className="h-full rounded-full transition-all duration-700"
+          style={{ width: `${(TASK_PROGRESS[task.state] ?? 0.15) * 100}%`, background: status.dot }}
+        />
+      </div>
+      {/* The contractor's deliverable, inline, once reported */}
+      {artifact && (
+        <p className="mt-2 text-[11px] leading-snug text-foreground/75 bg-muted/60 border border-border/50 rounded px-2 py-1.5 line-clamp-3 whitespace-pre-wrap">
+          <span className="text-emerald-600 dark:text-emerald-400 font-semibold">Result · </span>{artifact}
+        </p>
+      )}
     </button>
   );
 }

@@ -65,12 +65,9 @@ export function AgentProfilePanel() {
     return () => { alive = false; clearInterval(id); };
   }, [selectedAgentName]);
 
-  // Keep this agent's A2A tasks fresh while the panel is open.
+  // a2aTasks is kept live by the workspace-wide poll; just refresh on open.
   useEffect(() => {
-    if (!selectedAgentName) return;
-    refreshA2ATasks();
-    const id = setInterval(refreshA2ATasks, 5000);
-    return () => clearInterval(id);
+    if (selectedAgentName) refreshA2ATasks();
   }, [selectedAgentName, refreshA2ATasks]);
 
   // Auto-scroll the session timeline (oldest → newest), but stick to the bottom
