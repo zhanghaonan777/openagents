@@ -370,3 +370,329 @@ def test_multiple_delegations_in_one_channel_do_not_auto_complete(client, worksp
     for tid in (t1, t2):
         st = client.get(f"/v1/a2a/tasks/{tid}", params={"network": workspace["id"]}, headers=_hdr(workspace)).json()["data"]["state"]
         assert st == "working"
+
+
+# ---------------------------------------------------------------------------
+# Review loop — peer review of a delegated deliverable
+# ---------------------------------------------------------------------------
+
+def _review_of(client, ws, tid):
+    got = client.get(f"/v1/a2a/tasks/{tid}", params={"network": ws["id"]}, headers=_hdr(ws))
+    return got.json()["data"]["review"]
+
+
+def test_review_request_defaults_to_delegator(client, workspace):
+    """Requesting review with no reviewer assigns the delegator (an agent)."""
+    _join(client, workspace, "pm")
+    _join(client, workspace, "coder")
+    tid = _delegate(client, workspace).json()["data"]["id"]
+    r = client.post(f"/v1/a2a/tasks/{tid}/review/request",
+                    json={"network": workspace["id"]}, headers=_hdr(workspace))
+    assert r.status_code == 200, r.text
+    review = r.json()["data"]["review"]
+    assert review["state"] == "pending"
+    assert review["reviewer"] == "pm"
+
+
+def test_review_approve(client, workspace):
+    _join(client, workspace, "pm")
+    _join(client, workspace, "coder")
+    tid = _delegate(client, workspace).json()["data"]["id"]
+    client.post(f"/v1/a2a/tasks/{tid}/review/request",
+                json={"network": workspace["id"]}, headers=_hdr(workspace))
+    r = client.post(f"/v1/a2a/tasks/{tid}/review/approve",
+                    json={"network": workspace["id"], "comment": "LGTM"}, headers=_hdr(workspace))
+    assert r.status_code == 200, r.text
+    review = r.json()["data"]["review"]
+    assert review["state"] == "approved"
+    assert review["comment"] == "LGTM"
+
+
+def test_review_request_changes(client, workspace):
+    _join(client, workspace, "pm")
+    _join(client, workspace, "coder")
+    tid = _delegate(client, workspace).json()["data"]["id"]
+    client.post(f"/v1/a2a/tasks/{tid}/review/request",
+                json={"network": workspace["id"]}, headers=_hdr(workspace))
+    r = client.post(f"/v1/a2a/tasks/{tid}/review/request-changes",
+                    json={"network": workspace["id"], "comment": "fix the validation"},
+                    headers=_hdr(workspace))
+    assert r.status_code == 200, r.text
+    review = r.json()["data"]["review"]
+    assert review["state"] == "changes_requested"
+    assert review["comment"] == "fix the validation"
+
+
+def test_review_explicit_reviewer(client, workspace):
+    _join(client, workspace, "pm")
+    _join(client, workspace, "coder")
+    _join(client, workspace, "qa")
+    tid = _delegate(client, workspace).json()["data"]["id"]
+    r = client.post(f"/v1/a2a/tasks/{tid}/review/request",
+                    json={"network": workspace["id"], "reviewer": "qa"}, headers=_hdr(workspace))
+    assert r.status_code == 200, r.text
+    assert r.json()["data"]["review"]["reviewer"] == "qa"
+
+
+def test_review_self_review_rejected(client, workspace):
+    """The contractor cannot be the reviewer of their own work."""
+    _join(client, workspace, "pm")
+    _join(client, workspace, "coder")
+    tid = _delegate(client, workspace).json()["data"]["id"]
+    r = client.post(f"/v1/a2a/tasks/{tid}/review/request",
+                    json={"network": workspace["id"], "reviewer": "coder"}, headers=_hdr(workspace))
+    assert r.status_code == 400
+
+
+def test_review_unknown_reviewer_rejected(client, workspace):
+    _join(client, workspace, "pm")
+    _join(client, workspace, "coder")
+    tid = _delegate(client, workspace).json()["data"]["id"]
+    r = client.post(f"/v1/a2a/tasks/{tid}/review/request",
+                    json={"network": workspace["id"], "reviewer": "ghost"}, headers=_hdr(workspace))
+    assert r.status_code == 400
+
+
+def test_review_approve_without_pending_rejected(client, workspace):
+    _join(client, workspace, "pm")
+    _join(client, workspace, "coder")
+    tid = _delegate(client, workspace).json()["data"]["id"]
+    r = client.post(f"/v1/a2a/tasks/{tid}/review/approve",
+                    json={"network": workspace["id"]}, headers=_hdr(workspace))
+    assert r.status_code == 400
+
+
+def test_review_does_not_change_protocol_state(client, workspace):
+    """Review is a decoupled overlay — it must not mutate the A2A task state."""
+    _join(client, workspace, "pm")
+    _join(client, workspace, "coder")
+    tid = _delegate(client, workspace).json()["data"]["id"]
+    before = client.get(f"/v1/a2a/tasks/{tid}", params={"network": workspace["id"]}, headers=_hdr(workspace)).json()["data"]["state"]
+    client.post(f"/v1/a2a/tasks/{tid}/review/request", json={"network": workspace["id"]}, headers=_hdr(workspace))
+    client.post(f"/v1/a2a/tasks/{tid}/review/approve", json={"network": workspace["id"]}, headers=_hdr(workspace))
+    after = client.get(f"/v1/a2a/tasks/{tid}", params={"network": workspace["id"]}, headers=_hdr(workspace)).json()["data"]["state"]
+    assert before == after == "submitted"
+
+
+# ---------------------------------------------------------------------------
+# Derived agenda (briefing) — "what's mine now"
+# ---------------------------------------------------------------------------
+
+def test_briefing_lists_contractor_work(client, workspace):
+    _join(client, workspace, "pm")
+    _join(client, workspace, "coder")
+    _delegate(client, workspace, text="task one")
+    r = client.get("/v1/a2a/briefing", params={"network": workspace["id"], "agent": "coder"}, headers=_hdr(workspace))
+    assert r.status_code == 200, r.text
+    data = r.json()["data"]
+    assert data["counts"]["work"] == 1
+    assert data["items"][0]["kind"] == "work"
+    assert data["items"][0]["contractorName"] == "coder"
+
+
+def test_briefing_orders_review_pickup_first(client, workspace):
+    """An assigned review outranks the reviewer's own pending work."""
+    _join(client, workspace, "pm")
+    _join(client, workspace, "coder")
+    # pm delegates to coder; coder also delegates something to pm so pm has work.
+    tid = _delegate(client, workspace).json()["data"]["id"]
+    client.post("/v1/a2a/tasks", json={
+        "network": workspace["id"], "source": "openagents:coder",
+        "contractor": "pm", "text": "pm do this", "context_id": workspace["channel"]["name"],
+    }, headers=_hdr(workspace))
+    # Request review from pm on coder's task.
+    client.post(f"/v1/a2a/tasks/{tid}/review/request", json={"network": workspace["id"]}, headers=_hdr(workspace))
+
+    r = client.get("/v1/a2a/briefing", params={"network": workspace["id"], "agent": "pm"}, headers=_hdr(workspace))
+    items = r.json()["data"]["items"]
+    assert items[0]["kind"] == "review"           # review-pickup first
+    assert items[0]["priority"] == "review_pickup"
+    assert any(it["kind"] == "work" for it in items)  # pm's own work still listed, but after
+
+
+def test_briefing_rework_outranks_fresh_work(client, workspace):
+    _join(client, workspace, "pm")
+    _join(client, workspace, "coder")
+    t_rework = _delegate(client, workspace, text="rework one").json()["data"]["id"]
+    _delegate(client, workspace, text="fresh one")
+    # Put t_rework into changes_requested.
+    client.post(f"/v1/a2a/tasks/{t_rework}/review/request", json={"network": workspace["id"]}, headers=_hdr(workspace))
+    client.post(f"/v1/a2a/tasks/{t_rework}/review/request-changes",
+                json={"network": workspace["id"], "comment": "redo"}, headers=_hdr(workspace))
+
+    r = client.get("/v1/a2a/briefing", params={"network": workspace["id"], "agent": "coder"}, headers=_hdr(workspace))
+    items = r.json()["data"]["items"]
+    assert items[0]["taskId"] == t_rework
+    assert items[0]["priority"] == "rework"
+
+
+def test_briefing_excludes_finished_work(client, workspace):
+    _join(client, workspace, "pm")
+    _join(client, workspace, "coder")
+    tid = _delegate(client, workspace).json()["data"]["id"]
+    client.post(f"/v1/a2a/tasks/{tid}/status", json={"network": workspace["id"], "state": "completed"}, headers=_hdr(workspace))
+    r = client.get("/v1/a2a/briefing", params={"network": workspace["id"], "agent": "coder"}, headers=_hdr(workspace))
+    assert r.json()["data"]["counts"]["work"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Task comments — discussion thread on a delegation
+# ---------------------------------------------------------------------------
+
+def test_comment_append_and_serialize(client, workspace):
+    _join(client, workspace, "pm")
+    _join(client, workspace, "coder")
+    tid = _delegate(client, workspace).json()["data"]["id"]
+    r = client.post(f"/v1/a2a/tasks/{tid}/comments",
+                    json={"network": workspace["id"], "author": "openagents:pm", "text": "looks good, ship it"},
+                    headers=_hdr(workspace))
+    assert r.status_code == 200, r.text
+    comments = r.json()["data"]["comments"]
+    assert len(comments) == 1
+    assert comments[0]["author"] == "pm"
+    assert comments[0]["text"] == "looks good, ship it"
+    assert comments[0]["createdAt"]
+
+
+def test_comment_order_preserved(client, workspace):
+    _join(client, workspace, "pm")
+    _join(client, workspace, "coder")
+    tid = _delegate(client, workspace).json()["data"]["id"]
+    for txt in ("first", "second", "third"):
+        client.post(f"/v1/a2a/tasks/{tid}/comments",
+                    json={"network": workspace["id"], "author": "openagents:coder", "text": txt},
+                    headers=_hdr(workspace))
+    got = client.get(f"/v1/a2a/tasks/{tid}", params={"network": workspace["id"]}, headers=_hdr(workspace))
+    texts = [c["text"] for c in got.json()["data"]["comments"]]
+    assert texts == ["first", "second", "third"]
+
+
+def test_comment_empty_rejected(client, workspace):
+    _join(client, workspace, "coder")
+    tid = _delegate(client, workspace).json()["data"]["id"]
+    r = client.post(f"/v1/a2a/tasks/{tid}/comments",
+                    json={"network": workspace["id"], "author": "human:you", "text": "   "},
+                    headers=_hdr(workspace))
+    assert r.status_code == 400
+
+
+# ---------------------------------------------------------------------------
+# Task dependencies — blocks / blocked-by + frontier scheduling
+# ---------------------------------------------------------------------------
+
+def test_dependency_link_maintains_both_sides(client, workspace):
+    _join(client, workspace, "pm")
+    _join(client, workspace, "coder")
+    a = _delegate(client, workspace, text="task A").json()["data"]["id"]
+    b = _delegate(client, workspace, text="task B").json()["data"]["id"]
+    # A is blocked by B
+    r = client.post(f"/v1/a2a/tasks/{a}/dependencies",
+                    json={"network": workspace["id"], "blocked_by": b}, headers=_hdr(workspace))
+    assert r.status_code == 200, r.text
+    assert r.json()["data"]["blockedBy"] == [b]
+    # B should now record that it blocks A
+    bt = client.get(f"/v1/a2a/tasks/{b}", params={"network": workspace["id"]}, headers=_hdr(workspace))
+    assert bt.json()["data"]["blocks"] == [a]
+
+
+def test_dependency_unlink(client, workspace):
+    _join(client, workspace, "coder")
+    a = _delegate(client, workspace, text="A").json()["data"]["id"]
+    b = _delegate(client, workspace, text="B").json()["data"]["id"]
+    client.post(f"/v1/a2a/tasks/{a}/dependencies", json={"network": workspace["id"], "blocked_by": b}, headers=_hdr(workspace))
+    r = client.post(f"/v1/a2a/tasks/{a}/dependencies",
+                    json={"network": workspace["id"], "blocked_by": b, "action": "remove"}, headers=_hdr(workspace))
+    assert r.json()["data"]["blockedBy"] == []
+
+
+def test_dependency_self_rejected(client, workspace):
+    _join(client, workspace, "coder")
+    a = _delegate(client, workspace, text="A").json()["data"]["id"]
+    r = client.post(f"/v1/a2a/tasks/{a}/dependencies", json={"network": workspace["id"], "blocked_by": a}, headers=_hdr(workspace))
+    assert r.status_code == 400
+
+
+def test_briefing_excludes_blocked_work(client, workspace):
+    """A task blocked by an unfinished task is not in the contractor's agenda."""
+    _join(client, workspace, "pm")
+    _join(client, workspace, "coder")
+    a = _delegate(client, workspace, text="blocked A").json()["data"]["id"]
+    b = _delegate(client, workspace, text="blocker B").json()["data"]["id"]
+    client.post(f"/v1/a2a/tasks/{a}/dependencies", json={"network": workspace["id"], "blocked_by": b}, headers=_hdr(workspace))
+    # While B is open, A is blocked → coder's agenda should only have B (and not A)
+    items = client.get("/v1/a2a/briefing", params={"network": workspace["id"], "agent": "coder"}, headers=_hdr(workspace)).json()["data"]["items"]
+    ids = [it["taskId"] for it in items]
+    assert b in ids and a not in ids
+    # Finish B → A becomes actionable
+    client.post(f"/v1/a2a/tasks/{b}/status", json={"network": workspace["id"], "state": "completed"}, headers=_hdr(workspace))
+    items2 = client.get("/v1/a2a/briefing", params={"network": workspace["id"], "agent": "coder"}, headers=_hdr(workspace)).json()["data"]["items"]
+    assert a in [it["taskId"] for it in items2]
+
+
+def test_comment_reply_to(client, workspace):
+    _join(client, workspace, "pm")
+    _join(client, workspace, "coder")
+    tid = _delegate(client, workspace).json()["data"]["id"]
+    c1 = client.post(f"/v1/a2a/tasks/{tid}/comments", json={"network": workspace["id"], "author": "openagents:pm", "text": "first"}, headers=_hdr(workspace)).json()["data"]["comments"][0]["id"]
+    r = client.post(f"/v1/a2a/tasks/{tid}/comments", json={"network": workspace["id"], "author": "openagents:coder", "text": "reply", "reply_to": c1}, headers=_hdr(workspace))
+    comments = r.json()["data"]["comments"]
+    assert comments[1]["replyTo"] == c1
+
+
+# ---------------------------------------------------------------------------
+# Team coordination — reassign / nudge / clarification
+# ---------------------------------------------------------------------------
+
+def test_reassign_changes_contractor(client, workspace):
+    _join(client, workspace, "pm")
+    _join(client, workspace, "coder")
+    _join(client, workspace, "coder2")
+    tid = _delegate(client, workspace, contractor="coder").json()["data"]["id"]
+    r = client.post(f"/v1/a2a/tasks/{tid}/reassign", json={"network": workspace["id"], "contractor": "coder2"}, headers=_hdr(workspace))
+    assert r.status_code == 200, r.text
+    assert r.json()["data"]["contractorName"] == "coder2"
+
+
+def test_reassign_unknown_rejected(client, workspace):
+    _join(client, workspace, "coder")
+    tid = _delegate(client, workspace).json()["data"]["id"]
+    r = client.post(f"/v1/a2a/tasks/{tid}/reassign", json={"network": workspace["id"], "contractor": "ghost"}, headers=_hdr(workspace))
+    assert r.status_code == 400
+
+
+def test_reassign_terminal_rejected(client, workspace):
+    _join(client, workspace, "coder")
+    _join(client, workspace, "coder2")
+    tid = _delegate(client, workspace).json()["data"]["id"]
+    client.post(f"/v1/a2a/tasks/{tid}/status", json={"network": workspace["id"], "state": "completed"}, headers=_hdr(workspace))
+    r = client.post(f"/v1/a2a/tasks/{tid}/reassign", json={"network": workspace["id"], "contractor": "coder2"}, headers=_hdr(workspace))
+    assert r.status_code == 400
+
+
+def test_nudge_non_terminal(client, workspace):
+    _join(client, workspace, "coder")
+    tid = _delegate(client, workspace).json()["data"]["id"]
+    r = client.post(f"/v1/a2a/tasks/{tid}/nudge", json={"network": workspace["id"]}, headers=_hdr(workspace))
+    assert r.status_code == 200, r.text
+
+
+def test_nudge_terminal_rejected(client, workspace):
+    _join(client, workspace, "coder")
+    tid = _delegate(client, workspace).json()["data"]["id"]
+    client.post(f"/v1/a2a/tasks/{tid}/cancel", json={"network": workspace["id"]}, headers=_hdr(workspace))
+    r = client.post(f"/v1/a2a/tasks/{tid}/nudge", json={"network": workspace["id"]}, headers=_hdr(workspace))
+    assert r.status_code == 400
+
+
+def test_clarification_set_and_resolve(client, workspace):
+    _join(client, workspace, "pm")
+    _join(client, workspace, "coder")
+    tid = _delegate(client, workspace).json()["data"]["id"]
+    r = client.post(f"/v1/a2a/tasks/{tid}/clarification", json={"network": workspace["id"], "action": "set", "question": "Which database?"}, headers=_hdr(workspace))
+    assert r.status_code == 200, r.text
+    cl = r.json()["data"]["clarification"]
+    assert cl["state"] == "needs_user" and cl["question"] == "Which database?"
+    r2 = client.post(f"/v1/a2a/tasks/{tid}/clarification", json={"network": workspace["id"], "action": "resolve", "answer": "Postgres"}, headers=_hdr(workspace))
+    assert r2.json()["data"]["clarification"] is None
+    # the answer is recorded as a comment
+    assert any(c["text"] == "Postgres" for c in r2.json()["data"]["comments"])

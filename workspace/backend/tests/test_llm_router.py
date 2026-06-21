@@ -9,6 +9,7 @@ import asyncio
 import pytest
 from unittest.mock import patch, MagicMock
 
+from sqlalchemy import select
 from app.models import Channel, ChannelMember, WorkspaceMember, Workspace
 from app.mods.workspace_mod import _route_with_llm
 from openagents.core.onm_events import Event
@@ -379,3 +380,102 @@ class TestMessagePostedTargetAgents:
             out = _run(_handle_message_posted(event, ctx))
             # No broadcast → falls back to the single master, not the whole room.
             assert out.metadata["target_agents"] == ["agent-master"], content
+
+
+class TestLivenessGate:
+    """Auto-routing must never select an unreachable (offline / stale) agent."""
+
+    def _set_member(self, db, ws, name, *, status, last_heartbeat=None):
+        m = db.execute(
+            select(WorkspaceMember).where(
+                WorkspaceMember.workspace_id == ws.id,
+                WorkspaceMember.agent_name == name,
+            )
+        ).scalar_one()
+        m.status = status
+        m.last_heartbeat = last_heartbeat
+        db.flush()
+
+    def test_broadcast_skips_offline_agent(self, db, multi_agent_workspace):
+        """`@all` only rolls-call reachable agents; offline ones are reported."""
+        from app.mods.workspace_mod import _handle_message_posted
+        from openagents.core.onm_mods import PipelineContext
+
+        ws = multi_agent_workspace["workspace"]
+        self._set_member(db, ws, "agent-worker", status="offline")
+
+        event = _make_event("human:user", "channel/session-test", "@all sound off")
+        ctx = PipelineContext(network_id=str(ws.id), agent_address="human:user", db=db, workspace=ws)
+        out = _run(_handle_message_posted(event, ctx))
+
+        assert out.metadata["target_agents"] == ["agent-master"]
+        assert out.metadata.get("offline_skipped") == ["agent-worker"]
+
+    def test_stale_heartbeat_treated_as_offline(self, db, multi_agent_workspace):
+        """An agent that claims online but hasn't beat within the lease is skipped."""
+        from datetime import datetime, timedelta, timezone
+        from app.mods.workspace_mod import _handle_message_posted
+        from openagents.core.onm_mods import PipelineContext
+
+        ws = multi_agent_workspace["workspace"]
+        stale = datetime.now(timezone.utc) - timedelta(hours=1)
+        self._set_member(db, ws, "agent-worker", status="online", last_heartbeat=stale)
+
+        event = _make_event("human:user", "channel/session-test", "@all status?")
+        ctx = PipelineContext(network_id=str(ws.id), agent_address="human:user", db=db, workspace=ws)
+        out = _run(_handle_message_posted(event, ctx))
+
+        assert out.metadata["target_agents"] == ["agent-master"]
+
+    def test_router_not_invoked_when_only_one_agent_live(self, db, multi_agent_workspace):
+        """With one of two participants offline, the channel routes single-agent
+        (to the live master) instead of invoking the LLM router on a dead pool."""
+        from app.mods.workspace_mod import _handle_message_posted
+        from openagents.core.onm_mods import PipelineContext
+
+        ws = multi_agent_workspace["workspace"]
+        self._set_member(db, ws, "agent-worker", status="offline")
+
+        event = _make_event("human:user", "channel/session-test", "anyone around?")
+        ctx = PipelineContext(network_id=str(ws.id), agent_address="human:user", db=db, workspace=ws)
+        # No LLM client mocked: if the router were invoked it would need one.
+        out = _run(_handle_message_posted(event, ctx))
+
+        assert out.metadata["target_agents"] == ["agent-master"]
+
+    def test_explicit_mention_of_offline_agent_is_honoured(self, db, multi_agent_workspace):
+        """An explicit @mention is a deliberate act — routed even if offline,
+        with the offline state surfaced via metadata."""
+        from app.mods.workspace_mod import _handle_message_posted
+        from openagents.core.onm_mods import PipelineContext
+
+        ws = multi_agent_workspace["workspace"]
+        self._set_member(db, ws, "agent-worker", status="offline")
+
+        event = _make_event("human:user", "channel/session-test", "@agent-worker ping")
+        ctx = PipelineContext(network_id=str(ws.id), agent_address="human:user", db=db, workspace=ws)
+        out = _run(_handle_message_posted(event, ctx))
+
+        assert out.metadata["target_agents"] == ["agent-worker"]
+        assert out.metadata.get("offline_skipped") == ["agent-worker"]
+
+
+def test_liveness_effective_status_unit():
+    """effective_status: stale heartbeat → offline; cloud trusts stored status."""
+    from datetime import datetime, timedelta, timezone
+    from types import SimpleNamespace
+    from app.services.liveness import effective_status, live_agent_names
+
+    now = datetime.now(timezone.utc)
+    fresh = SimpleNamespace(agent_name="a", agent_type="claude", status="online", last_heartbeat=now)
+    stale = SimpleNamespace(agent_name="b", agent_type="claude", status="online",
+                            last_heartbeat=now - timedelta(hours=1))
+    no_hb = SimpleNamespace(agent_name="c", agent_type="claude", status="online", last_heartbeat=None)
+    cloud = SimpleNamespace(agent_name="d", agent_type="cloud:openai", status="online",
+                            last_heartbeat=now - timedelta(hours=1))
+
+    assert effective_status(fresh, now) == "online"
+    assert effective_status(stale, now) == "offline"
+    assert effective_status(no_hb, now) == "online"   # legacy/just-joined: trust status
+    assert effective_status(cloud, now) == "online"   # cloud agents don't heartbeat
+    assert live_agent_names([fresh, stale, no_hb, cloud], now) == {"a", "c", "d"}

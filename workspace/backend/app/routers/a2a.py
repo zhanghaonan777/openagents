@@ -25,6 +25,7 @@ The first four terminal states cannot transition further.
 import logging
 import os
 import time
+import uuid as _uuidlib
 from datetime import datetime, timedelta, timezone
 from typing import List, Optional
 
@@ -159,6 +160,19 @@ def _serialize_task(t: TaskRecord) -> dict:
         "contractorName": _agent_name(t.contractor),
         "skillId": t.skill_id,
         "state": wire_state,
+        # Review overlay (decoupled from the A2A protocol state): {state,
+        # reviewer, comment, ...} or None. Lets the board show a Review/Approved
+        # lane without mutating the task's protocol lifecycle.
+        "review": (t.task_metadata or {}).get("review"),
+        # Discussion thread on the task (author/text/createdAt), oldest first.
+        "comments": (t.task_metadata or {}).get("comments") or [],
+        # Dependency edges (task ids). blockedBy = tasks that must finish first;
+        # blocks = tasks waiting on this one. Maintained as a pair by /link.
+        "blockedBy": ((t.task_metadata or {}).get("dependencies") or {}).get("blockedBy") or [],
+        "blocks": ((t.task_metadata or {}).get("dependencies") or {}).get("blocks") or [],
+        # Clarification overlay: {state: 'needs_user', question, askedAt} when the
+        # task is waiting on a human, else None.
+        "clarification": (t.task_metadata or {}).get("clarification"),
         "channel": t.channel_name,
         "createdAt": _iso(t.created_at),
         "updatedAt": _iso(t.updated_at),
@@ -252,6 +266,44 @@ def _apply_transition(t: TaskRecord, new_state: str, status_msg: Optional[dict])
         t.deadline_at = _now() + timedelta(seconds=LEASE_SECONDS)  # extend the lease
 
 
+REVIEW_STATES = {"pending", "approved", "changes_requested"}
+
+
+def _set_review(t: TaskRecord, **fields) -> dict:
+    """Merge ``fields`` into the task's review overlay (in task_metadata).
+
+    The overlay is a *workflow* layer kept separate from the A2A protocol state
+    (mirroring agent-teams-ai's kanban/task decoupling): reviewing a deliverable
+    never mutates the task's submitted/working/completed lifecycle, so the two
+    can't clobber each other. Reassigns the whole JSON dict so SQLAlchemy's
+    change-tracking (and the version bump that guards concurrent writes) fires.
+    """
+    meta = dict(t.task_metadata or {})
+    review = dict(meta.get("review") or {})
+    review.update(fields)
+    meta["review"] = review
+    t.task_metadata = meta
+    t.updated_at = _now()
+    return review
+
+
+def _edit_dep(t: TaskRecord, key: str, other_id: str, add: bool) -> None:
+    """Add/remove a dependency edge (key='blockedBy'|'blocks') on a task,
+    reassigning the JSON dict so SQLAlchemy tracks the change + bumps version."""
+    meta = dict(t.task_metadata or {})
+    deps = dict(meta.get("dependencies") or {})
+    lst = list(deps.get(key) or [])
+    if add:
+        if other_id not in lst:
+            lst.append(other_id)
+    else:
+        lst = [x for x in lst if x != other_id]
+    deps[key] = lst
+    meta["dependencies"] = deps
+    t.task_metadata = meta
+    t.updated_at = _now()
+
+
 def _is_member(db: Session, workspace_id: str, agent_name: str) -> bool:
     return db.execute(
         select(WorkspaceMember).where(
@@ -318,6 +370,50 @@ class TaskStatusRequest(BaseModel):
 
 class CancelTaskRequest(BaseModel):
     network: str
+
+
+class ReviewRequestRequest(BaseModel):
+    network: str
+    reviewer: Optional[str] = None    # agent to review; defaults to the delegator (if an agent)
+    actor: Optional[str] = None       # who asked for review (advisory, for history)
+
+
+class ReviewDecisionRequest(BaseModel):
+    network: str
+    reviewer: Optional[str] = None    # who decided (advisory, for attribution)
+    comment: Optional[str] = None     # review feedback
+
+
+class CommentRequest(BaseModel):
+    network: str
+    author: str                       # "openagents:agent" | "human:email" | bare name
+    text: str
+    reply_to: Optional[str] = None    # id of the comment this one replies to
+
+
+class DependencyRequest(BaseModel):
+    network: str
+    blocked_by: str                   # task id this task should wait on
+    action: str = "add"               # "add" | "remove"
+
+
+class ReassignRequest(BaseModel):
+    network: str
+    contractor: str                   # the new contractor (agent name or address)
+    actor: Optional[str] = None       # who reassigned (advisory)
+
+
+class NudgeRequest(BaseModel):
+    network: str
+    text: Optional[str] = None        # optional custom nudge text
+
+
+class ClarificationRequest(BaseModel):
+    network: str
+    action: str                       # "set" | "resolve"
+    question: Optional[str] = None    # what input is needed (on set)
+    answer: Optional[str] = None      # the human's answer (on resolve)
+    actor: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
@@ -545,6 +641,94 @@ def list_tasks(
     return success_response({"tasks": [_serialize_task(t) for t in rows]})
 
 
+# Priority order for an agent's derived agenda (highest first). Mirrors
+# agent-teams-ai's "opinionated queue": pick up assigned reviews before doing
+# new work, and rework (changes requested) before fresh tasks.
+_AGENDA_RANK = {"review_pickup": 0, "rework": 1, "working": 2, "assigned": 3}
+
+
+def _derive_agenda(db: Session, workspace_id: str, agent_name: str) -> list[dict]:
+    """The agent's actionable queue — only *what's mine now*, not the whole board.
+
+    Returns a small, deterministically-ordered list so an agent (or the UI)
+    knows what to do next without re-reasoning over every task. Two kinds:
+      - `review`: a pending review assigned to this agent (review-pickup duty);
+      - `work`: a task this agent contracts that still needs doing (with
+        `rework` ranked above fresh `working`/`assigned` items).
+    """
+    rows = db.execute(
+        select(TaskRecord).where(TaskRecord.workspace_id == workspace_id)
+    ).scalars().all()
+    # A task is "done enough" to unblock dependents once it's completed or its
+    # review is approved; anything else still blocks.
+    def _resolved(t: TaskRecord) -> bool:
+        rv = (t.task_metadata or {}).get("review") or {}
+        return t.state == "completed" or rv.get("state") == "approved"
+    state_by_id = {t.id: _resolved(t) for t in rows}
+    items: list[dict] = []
+    for t in rows:
+        review = (t.task_metadata or {}).get("review") or {}
+        # Review-pickup duty: assigned reviewer, review still pending.
+        if review.get("reviewer") == agent_name and review.get("state") == "pending":
+            items.append({
+                "taskId": t.id,
+                "kind": "review",
+                "priority": "review_pickup",
+                "reason": "review_assigned",
+                "state": _WIRE_STATE.get(t.state, t.state),
+                "contractorName": _agent_name(t.contractor),
+                "request": (t.input or {}).get("parts", [{}])[0].get("text") if t.input else None,
+            })
+            continue
+        # Work duty: this agent is the contractor and the task isn't finished.
+        if _agent_name(t.contractor) == agent_name and t.state not in TERMINAL_STATES:
+            # Frontier scheduling: skip tasks still blocked by unfinished deps.
+            blocked_by = ((t.task_metadata or {}).get("dependencies") or {}).get("blockedBy") or []
+            if any(not state_by_id.get(bid, False) for bid in blocked_by):
+                continue
+            if review.get("state") == "changes_requested":
+                priority = "rework"
+            elif t.state == "working":
+                priority = "working"
+            else:
+                priority = "assigned"
+            items.append({
+                "taskId": t.id,
+                "kind": "work",
+                "priority": priority,
+                "reason": "changes_requested" if priority == "rework" else "owner_assigned",
+                "state": _WIRE_STATE.get(t.state, t.state),
+                "contractorName": _agent_name(t.contractor),
+                "request": (t.input or {}).get("parts", [{}])[0].get("text") if t.input else None,
+            })
+    items.sort(key=lambda it: (_AGENDA_RANK.get(it["priority"], 9), it["taskId"]))
+    return items
+
+
+@router.get("/briefing")
+def get_briefing(
+    network: str = Query(...),
+    agent: str = Query(...),
+    db: Session = Depends(get_db),
+    x_workspace_token: Optional[str] = Header(None),
+    authorization: Optional[str] = Header(None),
+):
+    """An agent's derived agenda — its actionable queue, review-pickup first."""
+    workspace = _resolve_workspace(db, network)
+    if not workspace:
+        return json_response(ResponseCode.NOT_FOUND, "Network not found")
+    if not _verify_workspace_access(workspace, x_workspace_token, authorization):
+        return json_response(ResponseCode.UNAUTHORIZED, "Invalid credentials")
+
+    agent_name = _agent_name(agent)
+    items = _derive_agenda(db, str(workspace.id), agent_name)
+    counts = {
+        "review": sum(1 for it in items if it["kind"] == "review"),
+        "work": sum(1 for it in items if it["kind"] == "work"),
+    }
+    return success_response({"agent": agent_name, "items": items, "counts": counts})
+
+
 def _load_task(db: Session, workspace_id: str, task_id: str) -> Optional[TaskRecord]:
     return db.execute(
         select(TaskRecord).where(
@@ -648,3 +832,419 @@ def cancel_task(
         return json_response(ResponseCode.CONFLICT, "Task was modified concurrently; retry")
     db.refresh(task)
     return success_response(_serialize_task(task))
+
+
+# ---------------------------------------------------------------------------
+# Review loop — peer review of a delegated deliverable (decoupled overlay)
+# ---------------------------------------------------------------------------
+# "Agents review each other": a reviewer is asked to check a contractor's work,
+# then approves it or requests changes. This rides on a review overlay in
+# task_metadata (see _set_review) and never mutates the A2A protocol state, so
+# it's safe on tasks at any point in their lifecycle.
+
+def _commit_review(db: Session, task: TaskRecord):
+    try:
+        db.commit()
+    except StaleDataError:
+        db.rollback()
+        return json_response(ResponseCode.CONFLICT, "Task was modified concurrently; retry")
+    db.refresh(task)
+    return success_response(_serialize_task(task))
+
+
+@router.post("/tasks/{task_id}/review/request")
+def request_review(
+    task_id: str,
+    body: ReviewRequestRequest,
+    db: Session = Depends(get_db),
+    x_workspace_token: Optional[str] = Header(None),
+    authorization: Optional[str] = Header(None),
+):
+    """Ask a reviewer to check the contractor's deliverable (→ review: pending).
+
+    Reviewer defaults to the delegator (the agent who handed off the work) and
+    must be a workspace member other than the contractor — you can't review your
+    own work. Posts an @-mention so the reviewer's runtime picks it up.
+    """
+    workspace = _resolve_workspace(db, body.network)
+    if not workspace:
+        return json_response(ResponseCode.NOT_FOUND, "Network not found")
+    if not _verify_workspace_access(workspace, x_workspace_token, authorization):
+        return json_response(ResponseCode.UNAUTHORIZED, "Invalid credentials")
+
+    task = _load_task(db, str(workspace.id), task_id)
+    if not task:
+        return json_response(ResponseCode.NOT_FOUND, "Task not found")
+
+    # Resolve the reviewer: explicit, else the delegator if it's an agent.
+    reviewer = body.reviewer
+    if not reviewer and (task.delegator or "").startswith("openagents:"):
+        reviewer = _agent_name(task.delegator)
+    if not reviewer:
+        return json_response(ResponseCode.BAD_REQUEST, "No reviewer given and delegator is not an agent")
+    reviewer = _agent_name(reviewer)
+    if reviewer == _agent_name(task.contractor):
+        return json_response(ResponseCode.BAD_REQUEST, "Reviewer cannot be the contractor (no self-review)")
+    if not _is_member(db, str(workspace.id), reviewer):
+        return json_response(ResponseCode.BAD_REQUEST, f"Unknown reviewer '{reviewer}'")
+
+    _set_review(
+        task,
+        state="pending",
+        reviewer=reviewer,
+        requestedAt=_iso(_now()),
+        requestedBy=body.actor or _agent_name(task.delegator),
+        comment=None,
+    )
+    task.history = list(task.history or []) + [_message("user", f"Review requested from {reviewer}.")]
+
+    # Nudge the reviewer in the task's channel (best-effort).
+    if task.channel_name:
+        try:
+            event = Event(
+                type="workspace.message.posted",
+                source=task.delegator,
+                target=f"channel/{task.channel_name}",
+                payload={
+                    "content": f"@{reviewer} please review {_agent_name(task.contractor)}'s "
+                               f"work on this task and approve or request changes.",
+                    "message_type": "chat",
+                },
+                metadata={"taskId": task.id, "review": "requested"},
+            )
+            _emit_event_blocking(event, workspace, db, token=x_workspace_token)
+        except Exception:
+            logger.exception("a2a: review-request nudge failed for task %s", task.id)
+
+    return _commit_review(db, task)
+
+
+@router.post("/tasks/{task_id}/review/approve")
+def approve_review(
+    task_id: str,
+    body: ReviewDecisionRequest,
+    db: Session = Depends(get_db),
+    x_workspace_token: Optional[str] = Header(None),
+    authorization: Optional[str] = Header(None),
+):
+    """Reviewer signs off on the deliverable (→ review: approved)."""
+    workspace = _resolve_workspace(db, body.network)
+    if not workspace:
+        return json_response(ResponseCode.NOT_FOUND, "Network not found")
+    if not _verify_workspace_access(workspace, x_workspace_token, authorization):
+        return json_response(ResponseCode.UNAUTHORIZED, "Invalid credentials")
+
+    task = _load_task(db, str(workspace.id), task_id)
+    if not task:
+        return json_response(ResponseCode.NOT_FOUND, "Task not found")
+    review = (task.task_metadata or {}).get("review")
+    if not review or review.get("state") != "pending":
+        return json_response(ResponseCode.BAD_REQUEST, "Task has no pending review")
+
+    _set_review(
+        task,
+        state="approved",
+        decidedAt=_iso(_now()),
+        decidedBy=body.reviewer or review.get("reviewer"),
+        comment=body.comment,
+    )
+    task.history = list(task.history or []) + [_message("user", "Review approved.")]
+    return _commit_review(db, task)
+
+
+@router.post("/tasks/{task_id}/review/request-changes")
+def request_changes(
+    task_id: str,
+    body: ReviewDecisionRequest,
+    db: Session = Depends(get_db),
+    x_workspace_token: Optional[str] = Header(None),
+    authorization: Optional[str] = Header(None),
+):
+    """Reviewer sends the work back for changes (→ review: changes_requested),
+    posting the feedback to the contractor so they pick it up again."""
+    workspace = _resolve_workspace(db, body.network)
+    if not workspace:
+        return json_response(ResponseCode.NOT_FOUND, "Network not found")
+    if not _verify_workspace_access(workspace, x_workspace_token, authorization):
+        return json_response(ResponseCode.UNAUTHORIZED, "Invalid credentials")
+
+    task = _load_task(db, str(workspace.id), task_id)
+    if not task:
+        return json_response(ResponseCode.NOT_FOUND, "Task not found")
+    review = (task.task_metadata or {}).get("review")
+    if not review or review.get("state") != "pending":
+        return json_response(ResponseCode.BAD_REQUEST, "Task has no pending review")
+
+    _set_review(
+        task,
+        state="changes_requested",
+        decidedAt=_iso(_now()),
+        decidedBy=body.reviewer or review.get("reviewer"),
+        comment=body.comment,
+    )
+    contractor_name = _agent_name(task.contractor)
+    task.history = list(task.history or []) + [
+        _message("user", f"Changes requested: {body.comment or '(no detail)'}")
+    ]
+
+    # Send the contractor back to work with the feedback (best-effort).
+    if task.channel_name:
+        try:
+            reviewer = review.get("reviewer") or "reviewer"
+            feedback = body.comment or "please revise your deliverable."
+            event = Event(
+                type="workspace.message.posted",
+                source=_agent_address(reviewer),
+                target=f"channel/{task.channel_name}",
+                payload={
+                    "content": f"@{contractor_name} changes requested on your task: {feedback}",
+                    "message_type": "chat",
+                },
+                metadata={"taskId": task.id, "review": "changes_requested"},
+            )
+            _emit_event_blocking(event, workspace, db, token=x_workspace_token)
+        except Exception:
+            logger.exception("a2a: request-changes nudge failed for task %s", task.id)
+
+    return _commit_review(db, task)
+
+
+# ---------------------------------------------------------------------------
+# Task comments — a lightweight discussion thread on a delegation
+# ---------------------------------------------------------------------------
+
+@router.post("/tasks/{task_id}/comments")
+def add_comment(
+    task_id: str,
+    body: CommentRequest,
+    db: Session = Depends(get_db),
+    x_workspace_token: Optional[str] = Header(None),
+    authorization: Optional[str] = Header(None),
+):
+    """Append a comment to the task's discussion thread (agents + humans)."""
+    workspace = _resolve_workspace(db, body.network)
+    if not workspace:
+        return json_response(ResponseCode.NOT_FOUND, "Network not found")
+    if not _verify_workspace_access(workspace, x_workspace_token, authorization):
+        return json_response(ResponseCode.UNAUTHORIZED, "Invalid credentials")
+
+    text = (body.text or "").strip()
+    if not text:
+        return json_response(ResponseCode.BAD_REQUEST, "Empty comment")
+
+    task = _load_task(db, str(workspace.id), task_id)
+    if not task:
+        return json_response(ResponseCode.NOT_FOUND, "Task not found")
+
+    meta = dict(task.task_metadata or {})
+    comments = list(meta.get("comments") or [])
+    comments.append({
+        "id": _uuidlib.uuid4().hex,
+        "author": _agent_name(body.author),
+        "text": text,
+        "createdAt": _iso(_now()),
+        "replyTo": body.reply_to,
+    })
+    meta["comments"] = comments
+    task.task_metadata = meta
+    task.updated_at = _now()
+    try:
+        db.commit()
+    except StaleDataError:
+        db.rollback()
+        return json_response(ResponseCode.CONFLICT, "Task was modified concurrently; retry")
+    db.refresh(task)
+    return success_response(_serialize_task(task))
+
+
+# ---------------------------------------------------------------------------
+# Task dependencies — blocks / blocked-by edges (frontier scheduling)
+# ---------------------------------------------------------------------------
+
+@router.post("/tasks/{task_id}/dependencies")
+def edit_dependency(
+    task_id: str,
+    body: DependencyRequest,
+    db: Session = Depends(get_db),
+    x_workspace_token: Optional[str] = Header(None),
+    authorization: Optional[str] = Header(None),
+):
+    """Add or remove a 'blocked by' edge: this task waits on `blocked_by`.
+
+    Maintains both sides of the edge — this task's blockedBy and the other
+    task's blocks — so the graph stays consistent.
+    """
+    workspace = _resolve_workspace(db, body.network)
+    if not workspace:
+        return json_response(ResponseCode.NOT_FOUND, "Network not found")
+    if not _verify_workspace_access(workspace, x_workspace_token, authorization):
+        return json_response(ResponseCode.UNAUTHORIZED, "Invalid credentials")
+    if body.action not in ("add", "remove"):
+        return json_response(ResponseCode.BAD_REQUEST, "action must be add|remove")
+    if body.blocked_by == task_id:
+        return json_response(ResponseCode.BAD_REQUEST, "A task cannot block itself")
+
+    task = _load_task(db, str(workspace.id), task_id)
+    blocker = _load_task(db, str(workspace.id), body.blocked_by)
+    if not task or not blocker:
+        return json_response(ResponseCode.NOT_FOUND, "Task not found")
+
+    add = body.action == "add"
+    _edit_dep(task, "blockedBy", blocker.id, add)
+    _edit_dep(blocker, "blocks", task.id, add)
+    try:
+        db.commit()
+    except StaleDataError:
+        db.rollback()
+        return json_response(ResponseCode.CONFLICT, "Task was modified concurrently; retry")
+    db.refresh(task)
+    return success_response(_serialize_task(task))
+
+
+# ---------------------------------------------------------------------------
+# Team coordination — reassign, nudge, clarification (boss ⇄ agent interactions)
+# ---------------------------------------------------------------------------
+
+@router.post("/tasks/{task_id}/reassign")
+def reassign_task(
+    task_id: str,
+    body: ReassignRequest,
+    db: Session = Depends(get_db),
+    x_workspace_token: Optional[str] = Header(None),
+    authorization: Optional[str] = Header(None),
+):
+    """Hand a non-terminal task to a different contractor and re-kick it off."""
+    workspace = _resolve_workspace(db, body.network)
+    if not workspace:
+        return json_response(ResponseCode.NOT_FOUND, "Network not found")
+    if not _verify_workspace_access(workspace, x_workspace_token, authorization):
+        return json_response(ResponseCode.UNAUTHORIZED, "Invalid credentials")
+
+    task = _load_task(db, str(workspace.id), task_id)
+    if not task:
+        return json_response(ResponseCode.NOT_FOUND, "Task not found")
+    if task.state in TERMINAL_STATES:
+        return json_response(ResponseCode.BAD_REQUEST, f"Task is already {task.state}")
+
+    new_name = _agent_name(body.contractor)
+    if not _is_member(db, str(workspace.id), new_name):
+        return json_response(ResponseCode.BAD_REQUEST, f"Unknown contractor '{new_name}'")
+    old_name = _agent_name(task.contractor)
+    if new_name == old_name:
+        return json_response(ResponseCode.BAD_REQUEST, "Already assigned to that agent")
+
+    task.contractor = _agent_address(new_name)
+    task.updated_at = _now()
+    task.history = list(task.history or []) + [_message("user", f"Reassigned from {old_name} to {new_name}.")]
+
+    # Re-kick-off the new contractor with the original instruction.
+    req_text = ((task.input or {}).get("parts") or [{}])[0].get("text") if task.input else None
+    if task.channel_name and req_text:
+        try:
+            event = Event(
+                type="workspace.message.posted",
+                source=task.delegator,
+                target=f"channel/{task.channel_name}",
+                payload={"content": build_delegation_kickoff(new_name, req_text, task.id), "message_type": "delegate"},
+                metadata={"taskId": task.id},
+            )
+            _emit_event_blocking(event, workspace, db, token=x_workspace_token)
+        except Exception:
+            logger.exception("a2a: reassign kick-off failed for task %s", task.id)
+    return _commit_review(db, task)
+
+
+@router.post("/tasks/{task_id}/nudge")
+def nudge_task(
+    task_id: str,
+    body: NudgeRequest,
+    db: Session = Depends(get_db),
+    x_workspace_token: Optional[str] = Header(None),
+    authorization: Optional[str] = Header(None),
+):
+    """Poke the contractor of a non-terminal task to continue / report status."""
+    workspace = _resolve_workspace(db, body.network)
+    if not workspace:
+        return json_response(ResponseCode.NOT_FOUND, "Network not found")
+    if not _verify_workspace_access(workspace, x_workspace_token, authorization):
+        return json_response(ResponseCode.UNAUTHORIZED, "Invalid credentials")
+
+    task = _load_task(db, str(workspace.id), task_id)
+    if not task:
+        return json_response(ResponseCode.NOT_FOUND, "Task not found")
+    if task.state in TERMINAL_STATES:
+        return json_response(ResponseCode.BAD_REQUEST, f"Task is already {task.state}")
+
+    contractor_name = _agent_name(task.contractor)
+    text = body.text or f"reminder — this task is still {_WIRE_STATE.get(task.state, task.state)}. Please continue or report status."
+    task.updated_at = _now()
+    task.history = list(task.history or []) + [_message("user", "Nudged the contractor.")]
+    if task.channel_name:
+        try:
+            event = Event(
+                type="workspace.message.posted",
+                source=task.delegator,
+                target=f"channel/{task.channel_name}",
+                payload={"content": f"@{contractor_name} {text}", "message_type": "chat"},
+                metadata={"taskId": task.id, "nudge": True},
+            )
+            _emit_event_blocking(event, workspace, db, token=x_workspace_token)
+        except Exception:
+            logger.exception("a2a: nudge failed for task %s", task.id)
+    return _commit_review(db, task)
+
+
+@router.post("/tasks/{task_id}/clarification")
+def set_clarification(
+    task_id: str,
+    body: ClarificationRequest,
+    db: Session = Depends(get_db),
+    x_workspace_token: Optional[str] = Header(None),
+    authorization: Optional[str] = Header(None),
+):
+    """Mark a task as waiting on human input, or resolve it with an answer."""
+    workspace = _resolve_workspace(db, body.network)
+    if not workspace:
+        return json_response(ResponseCode.NOT_FOUND, "Network not found")
+    if not _verify_workspace_access(workspace, x_workspace_token, authorization):
+        return json_response(ResponseCode.UNAUTHORIZED, "Invalid credentials")
+    if body.action not in ("set", "resolve"):
+        return json_response(ResponseCode.BAD_REQUEST, "action must be set|resolve")
+
+    task = _load_task(db, str(workspace.id), task_id)
+    if not task:
+        return json_response(ResponseCode.NOT_FOUND, "Task not found")
+
+    meta = dict(task.task_metadata or {})
+    if body.action == "set":
+        meta["clarification"] = {
+            "state": "needs_user",
+            "question": (body.question or "").strip() or "needs your input",
+            "askedAt": _iso(_now()),
+            "askedBy": body.actor or _agent_name(task.contractor),
+        }
+        task.history = list(task.history or []) + [_message("agent", f"Needs input: {meta['clarification']['question']}")]
+    else:
+        meta["clarification"] = None
+        if body.answer:
+            comments = list(meta.get("comments") or [])
+            comments.append({"id": _uuidlib.uuid4().hex, "author": _agent_name(body.actor or "human:you"),
+                             "text": body.answer, "createdAt": _iso(_now()), "replyTo": None})
+            meta["comments"] = comments
+            # Nudge the contractor with the answer so it can continue.
+            if task.channel_name:
+                try:
+                    event = Event(
+                        type="workspace.message.posted",
+                        source=task.delegator,
+                        target=f"channel/{task.channel_name}",
+                        payload={"content": f"@{_agent_name(task.contractor)} (clarification) {body.answer}", "message_type": "chat"},
+                        metadata={"taskId": task.id},
+                    )
+                    _emit_event_blocking(event, workspace, db, token=x_workspace_token)
+                except Exception:
+                    logger.exception("a2a: clarification answer relay failed for task %s", task.id)
+        task.history = list(task.history or []) + [_message("user", "Clarification resolved.")]
+    task.task_metadata = meta
+    task.updated_at = _now()
+    return _commit_review(db, task)

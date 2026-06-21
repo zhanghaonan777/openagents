@@ -500,22 +500,30 @@ def _extract_leading_mention(content: str, known_agents: List[str]) -> Optional[
     return None
 
 
-def _fallback_targets(event, channel, mentions: List[str]) -> List[str]:
+def _fallback_targets(event, channel, mentions: List[str], live: Optional[set] = None) -> List[str]:
     """Determine target agents when LLM router is unavailable.
 
-    Priority: explicit @mentions → master (for human/member msgs) → all participants.
+    Priority: explicit @mentions → master (for human/member msgs) → first
+    participant. When ``live`` is provided, the master/first-participant
+    fallbacks only pick a reachable agent so we never auto-route to a dead
+    one; explicit @mentions are still honoured verbatim (a deliberate act).
     """
     if mentions:
         return mentions
-    if channel.master_agent:
+    if channel.master_agent and (live is None or channel.master_agent in live):
         if event.source.startswith("openagents:"):
             sender = event.source[len("openagents:"):]
             # Master's own messages: no self-trigger
             if sender == channel.master_agent:
                 return []
         return [channel.master_agent]
-    # No master — target the first participant
-    participants = [p.agent_name for p in (channel.participants or [])]
+    # No (live) master — target the first live participant
+    participants = [
+        p.agent_name for p in (channel.participants or [])
+        if p.agent_name != "__no_response__"
+    ]
+    if live is not None:
+        participants = [name for name in participants if name in live]
     return [participants[0]] if participants else []
 
 
@@ -623,7 +631,7 @@ def _get_llm_client():
     return _llm_client, provider
 
 
-async def _route_with_llm(channel, new_event: Event, db, workspace) -> List[str]:
+async def _route_with_llm(channel, new_event: Event, db, workspace, live: Optional[set] = None) -> List[str]:
     """Use a small LLM to decide which agent(s) should respond next.
 
     Returns a list of agent names to target, or an empty list (stop).
@@ -672,6 +680,10 @@ async def _route_with_llm(channel, new_event: Event, db, workspace) -> List[str]
     # Participant list with role/description for better routing
     from app.models import WorkspaceMember
     participant_names = [p.agent_name for p in (channel.participants or [])]
+    # Only offer reachable agents as candidates, so the router can't pick a
+    # dead one. (Names with no live entry are dropped from the prompt below.)
+    if live is not None:
+        participant_names = [n for n in participant_names if n in live]
     members = {
         m.agent_name: m for m in db.execute(
             select(WorkspaceMember).where(
@@ -742,6 +754,7 @@ async def _route_with_llm(channel, new_event: Event, db, workspace) -> List[str]
             participants_by_lower = {
                 p.agent_name.lower(): p.agent_name
                 for p in (channel.participants or [])
+                if live is None or p.agent_name in live
             }
             canonical = participants_by_lower.get(agent_name.lower())
             if canonical is None:
@@ -774,7 +787,7 @@ async def _route_with_llm(channel, new_event: Event, db, workspace) -> List[str]
         # router can silently drop a legitimate follow-up question like
         # "how about Julia?" after a previous "final answer" message.
         if (new_event.source or "").startswith("human:"):
-            fallback = _fallback_targets(new_event, channel, [])
+            fallback = _fallback_targets(new_event, channel, [], live=live)
             if fallback:
                 logger.info(
                     "LLM router returned stop/invalid for human message — "
@@ -788,7 +801,7 @@ async def _route_with_llm(channel, new_event: Event, db, workspace) -> List[str]
         # Same safety net on exception: humans still get a reply.
         if (new_event.source or "").startswith("human:"):
             try:
-                fallback = _fallback_targets(new_event, channel, [])
+                fallback = _fallback_targets(new_event, channel, [], live=live)
                 if fallback:
                     return fallback
             except Exception:
@@ -919,13 +932,12 @@ async def _handle_message_posted(event: Event, ctx: PipelineContext) -> Optional
         return event
 
     # Parse @mentions from message content (used for human message routing)
-    known_agents = [
-        m.agent_name for m in db.execute(
-            select(WorkspaceMember).where(
-                WorkspaceMember.workspace_id == workspace.id,
-            )
-        ).scalars().all()
-    ]
+    members = db.execute(
+        select(WorkspaceMember).where(
+            WorkspaceMember.workspace_id == workspace.id,
+        )
+    ).scalars().all()
+    known_agents = [m.agent_name for m in members]
     mentions = _extract_mentions(content, known_agents)
 
     # Resolve channel (needed for both agent and human message routing)
@@ -961,6 +973,21 @@ async def _handle_message_posted(event: Event, ctx: PipelineContext) -> Optional
         p for p in (channel.participants or [])
         if p.agent_name != "__no_response__"
     ]
+    # ── Liveness gate ───────────────────────────────────────────────
+    # Only auto-route to agents that are actually reachable (online + fresh
+    # heartbeat). Without this a dead participant — a member row whose
+    # launcher went away — still looked routable, so a broadcast, an LLM
+    # router pick, or the master fallback could select it and the message
+    # would wedge with no reply. Automatic selection (broadcast / router /
+    # fallback) is gated to live agents; an explicit human @mention is left
+    # intact (a deliberate act — the human may be about to start that agent).
+    from app.services.liveness import live_agent_names
+    now = datetime.now(timezone.utc)
+    live = live_agent_names(members, now)
+    live_participants = [p for p in real_participants if p.agent_name in live]
+    offline_participants = [
+        p.agent_name for p in real_participants if p.agent_name not in live
+    ]
     is_human = event.source.startswith("human:")
     # A human can address the whole room with @all / @everyone / @channel /
     # @here — every participant replies (a roll-call), not just one. Boundaries
@@ -974,22 +1001,24 @@ async def _handle_message_posted(event: Event, ctx: PipelineContext) -> Optional
             broadcast = True
 
     if broadcast:
-        targets = [p.agent_name for p in real_participants]
+        # Roll-call: every *reachable* participant replies.
+        targets = [p.agent_name for p in live_participants]
     elif is_human and mentions:
         # Explicit @mentions from a human address ALL the named agents — each
         # one replies. (The serial LLM router would otherwise pick just one.)
+        # Honoured verbatim even if offline; offline ones surface in metadata.
         targets = mentions
-    elif len(real_participants) >= 2:
+    elif len(live_participants) >= 2:
         # ── Multi-agent channel: let the LLM router pick the next speaker ──
         from app.config import config
         if config.ROUTER_LLM_ENABLED and _get_router_api_key():
-            targets = await _route_with_llm(channel, event, db, workspace)
+            targets = await _route_with_llm(channel, event, db, workspace, live=live)
         else:
             # LLM router not available — fallback to mention or master
-            targets = _fallback_targets(event, channel, mentions)
-    # ── Single-agent channel ────────────────────────────────────────
+            targets = _fallback_targets(event, channel, mentions, live=live)
+    # ── Single live agent (others offline) ──────────────────────────
     else:
-        targets = _fallback_targets(event, channel, mentions)
+        targets = _fallback_targets(event, channel, mentions, live=live)
 
     # ALWAYS set target_agents, even when nobody should respond.
     #
@@ -1001,6 +1030,11 @@ async def _handle_message_posted(event: Event, ctx: PipelineContext) -> Optional
     # name causes old clients to reject (they fail the includes check)
     # and new clients to treat it as "nobody" (the sentinel is ignored).
     event.metadata["target_agents"] = targets if targets else ["__no_response__"]
+
+    # Surface participants we skipped because they're offline, so the UI can
+    # tell the human "X didn't reply — it's offline" instead of silence.
+    if offline_participants:
+        event.metadata["offline_skipped"] = offline_participants
 
     # Auto-add targeted agents as channel participants so they can poll
     # for messages on this channel. Three guards:

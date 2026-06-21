@@ -28,14 +28,13 @@ from app.database import get_db
 from app.models import Channel, Workspace, WorkspaceMember
 from app.pipeline_factory import pipeline
 from app.response import ResponseCode, json_response, success_response
+from app.services.liveness import effective_status
 from openagents.core.onm_events import Event
 from openagents.core.onm_mods import EventRejected, PipelineContext
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/v1", tags=["Network"])
-
-AGENT_TIMEOUT = timedelta(seconds=config.AGENT_TIMEOUT_SECONDS)
 
 
 # ---------------------------------------------------------------------------
@@ -393,14 +392,7 @@ def discover(
 
     agents = []
     for m in members:
-        status = m.status
-        is_cloud = (m.agent_type or "").startswith("cloud:")
-        if not is_cloud and m.last_heartbeat:
-            heartbeat = m.last_heartbeat
-            if heartbeat.tzinfo is None:
-                heartbeat = heartbeat.replace(tzinfo=timezone.utc)
-            if (now - heartbeat) > AGENT_TIMEOUT:
-                status = "offline"
+        status = effective_status(m, now)
         agents.append({
             "address": f"openagents:{m.agent_name}",
             "role": m.role,

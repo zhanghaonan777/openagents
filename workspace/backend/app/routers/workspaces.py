@@ -38,12 +38,11 @@ from app.models import (
 )
 from app.response import ResponseCode, json_response, success_response
 from app.routers.network import _workspace_filter
+from app.services.liveness import effective_status
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/v1/workspaces", tags=["Workspaces"])
-
-AGENT_TIMEOUT = timedelta(seconds=config.AGENT_TIMEOUT_SECONDS)
 
 
 def _extract_bearer(authorization: Optional[str]) -> Optional[str]:
@@ -127,15 +126,7 @@ def _mask_bf_key(key: str | None) -> str | None:
 def _format_workspace(ws: Workspace, members: list, now: datetime) -> dict:
     agents = []
     for m in members:
-        status = m.status
-        is_cloud = (m.agent_type or "").startswith("cloud:")
-        if not is_cloud and m.last_heartbeat:
-            # Ensure timezone-aware comparison (SQLite stores naive datetimes)
-            heartbeat = m.last_heartbeat
-            if heartbeat.tzinfo is None:
-                heartbeat = heartbeat.replace(tzinfo=timezone.utc)
-            if (now - heartbeat) > AGENT_TIMEOUT:
-                status = "offline"
+        status = effective_status(m, now)
         agents.append({
             "agentName": m.agent_name,
             "role": m.role,
