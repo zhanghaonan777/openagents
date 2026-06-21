@@ -173,6 +173,15 @@ def _serialize_task(t: TaskRecord) -> dict:
         # Clarification overlay: {state: 'needs_user', question, askedAt} when the
         # task is waiting on a human, else None.
         "clarification": (t.task_metadata or {}).get("clarification"),
+        # Subtask fan-out: parentId links a child delegation to its parent; the UI
+        # rolls up child progress on the parent card. Children are plain tasks.
+        "parentId": (t.task_metadata or {}).get("parentId"),
+        # Structured, typed activity timeline (status_changed/review_*/commented/
+        # reassigned/…), oldest first — distinct from the raw A2A message history.
+        "events": (t.task_metadata or {}).get("events") or [],
+        # Soft delete (recycle bin): hidden from the board but restorable.
+        "deleted": bool((t.task_metadata or {}).get("deleted")),
+        "deletedAt": ((t.task_metadata or {}).get("deleted") or {}).get("at"),
         "channel": t.channel_name,
         "createdAt": _iso(t.created_at),
         "updatedAt": _iso(t.updated_at),
@@ -225,7 +234,8 @@ def advance_tasks_on_contractor_activity(
                 # Start any submitted delegations the contractor is now working on.
                 for t in tasks:
                     if t.state == "submitted":
-                        _apply_transition(t, "working", _message("agent", "Started working."))
+                        _apply_transition(t, "working", _message("agent", "Started working."),
+                                          actor=_agent_name(t.contractor))
 
                 # Auto-complete only when the mapping is unambiguous: exactly one
                 # delegation shares this *named* channel. With multiple — or with a
@@ -241,7 +251,8 @@ def advance_tasks_on_contractor_activity(
                     ).scalars().all()
                     if todos and all(td.status == "completed" for td in todos):
                         t = tasks[0]
-                        _apply_transition(t, "completed", _message("agent", "All to-dos completed."))
+                        _apply_transition(t, "completed", _message("agent", "All to-dos completed."),
+                                          actor=_agent_name(t.contractor))
                         summary = "; ".join(td.content for td in todos)
                         t.artifacts = list(t.artifacts or []) + [
                             {"id": t.id, "name": "result", "parts": [{"text": summary}]}
@@ -254,11 +265,34 @@ def advance_tasks_on_contractor_activity(
         logger.exception("a2a: failed to advance tasks on contractor activity")
 
 
-def _apply_transition(t: TaskRecord, new_state: str, status_msg: Optional[dict]) -> None:
+def _append_event(t: TaskRecord, etype: str, actor: Optional[str] = None,
+                  detail: Optional[str] = None, **extra) -> None:
+    """Append a typed event to the task's structured timeline (task_metadata.events).
+
+    A decoupled overlay — like the review/comment/dependency overlays it lives in
+    task_metadata and never touches the A2A history/state machine. Reassigns the
+    whole dict so SQLAlchemy's change-tracking (and the version bump) fires.
+    """
+    meta = dict(t.task_metadata or {})
+    events = list(meta.get("events") or [])
+    ev: dict = {"type": etype, "at": _iso(_now())}
+    if actor:
+        ev["actor"] = actor
+    if detail:
+        ev["detail"] = detail
+    ev.update(extra)
+    events.append(ev)
+    meta["events"] = events
+    t.task_metadata = meta
+
+
+def _apply_transition(t: TaskRecord, new_state: str, status_msg: Optional[dict],
+                      actor: str = "system") -> None:
     t.state = new_state
     t.updated_at = _now()
     if status_msg:
         t.history = list(t.history or []) + [status_msg]
+    _append_event(t, "status_changed", actor=actor, detail=new_state)
     if new_state in TERMINAL_STATES:
         t.completed_at = _now()
         t.deadline_at = None              # terminal — reaper must never touch it
@@ -416,6 +450,19 @@ class ClarificationRequest(BaseModel):
     actor: Optional[str] = None
 
 
+class SubtaskRequest(BaseModel):
+    network: str
+    source: str                       # delegator of the subtask (lead/agent/human)
+    contractor: str                   # agent the subtask is fanned out to
+    text: str                         # the subtask instruction
+    skill_id: Optional[str] = None
+
+
+class ActorRequest(BaseModel):
+    network: str
+    actor: Optional[str] = None       # who performed the action (advisory, for the timeline)
+
+
 # ---------------------------------------------------------------------------
 # Capability discovery — Agent Cards
 # ---------------------------------------------------------------------------
@@ -503,6 +550,85 @@ def set_agent_skills(
 # Tasks
 # ---------------------------------------------------------------------------
 
+def _build_and_kickoff_task(
+    db: Session,
+    workspace,
+    *,
+    source: str,
+    contractor_addr: str,
+    text: str,
+    skill_id: Optional[str],
+    context_id: Optional[str],
+    parent_id: Optional[str] = None,
+    token: Optional[str] = None,
+) -> TaskRecord:
+    """Create a `submitted` delegation, post the @-mention kick-off, and emit the
+    directed task.delegated event — the shared core of create_task and the
+    subtask fan-out. The caller must already have validated that the contractor
+    is a member of `workspace`.
+    """
+    contractor_name = _agent_name(contractor_addr)
+    meta: dict = {}
+    if parent_id:
+        meta["parentId"] = parent_id
+
+    task = TaskRecord(
+        workspace_id=str(workspace.id),
+        context_id=context_id,
+        delegator=source,
+        contractor=contractor_addr,
+        skill_id=skill_id,
+        state="submitted",
+        input=_message("user", text),
+        artifacts=[],
+        history=[_message("user", text)],
+        task_metadata=meta,
+        channel_name=context_id,
+        deadline_at=_now() + timedelta(seconds=LEASE_SECONDS),
+    )
+    _append_event(task, "task_created", actor=_agent_name(source), detail=contractor_name)
+    db.add(task)
+    db.flush()
+
+    # Kick-off: post an @-mention so the contractor's runtime acts on it.
+    # Best-effort — a routing hiccup must not fail the delegation itself.
+    if context_id:
+        try:
+            event = Event(
+                type="workspace.message.posted",
+                source=source,
+                target=f"channel/{context_id}",
+                payload={
+                    "content": build_delegation_kickoff(contractor_name, text, task.id),
+                    "message_type": "delegate",
+                },
+                metadata={"taskId": task.id},
+            )
+            _emit_event_blocking(event, workspace, db, token=token)
+        except Exception:
+            logger.exception("a2a: kick-off message failed for task %s", task.id)
+
+    # Deliver a directed task.delegated event so a task-aware contractor can
+    # discover the assignment from its own event stream (Phase 2/3 native flow).
+    # Unhandled event type → passes through the pipeline and is persisted.
+    try:
+        delegated = Event(
+            type="workspace.task.delegated",
+            source=source,
+            target=contractor_addr,
+            payload={"task": _serialize_task(task)},
+            metadata={"taskId": task.id},
+            visibility="direct",
+        )
+        _emit_event_blocking(delegated, workspace, db, token=token)
+    except Exception:
+        logger.exception("a2a: task.delegated event failed for task %s", task.id)
+
+    db.commit()
+    db.refresh(task)
+    return task
+
+
 @router.post("/tasks")
 def create_task(
     body: CreateTaskRequest,
@@ -535,59 +661,15 @@ def create_task(
     if not _is_member(db, str(workspace.id), contractor_name):
         return json_response(ResponseCode.BAD_REQUEST, f"Unknown contractor '{contractor_name}'")
 
-    task = TaskRecord(
-        workspace_id=str(workspace.id),
-        context_id=body.context_id,
-        delegator=body.source,
-        contractor=contractor_addr,
+    task = _build_and_kickoff_task(
+        db, workspace,
+        source=body.source,
+        contractor_addr=contractor_addr,
+        text=body.text,
         skill_id=body.skill_id,
-        state="submitted",
-        input=_message("user", body.text),
-        artifacts=[],
-        history=[_message("user", body.text)],
-        task_metadata={},
-        channel_name=body.context_id,
-        deadline_at=_now() + timedelta(seconds=LEASE_SECONDS),
+        context_id=body.context_id,
+        token=x_workspace_token,
     )
-    db.add(task)
-    db.flush()
-
-    # Kick-off: post an @-mention so the contractor's runtime acts on it.
-    # Best-effort — a routing hiccup must not fail the delegation itself.
-    if body.context_id:
-        try:
-            event = Event(
-                type="workspace.message.posted",
-                source=body.source,
-                target=f"channel/{body.context_id}",
-                payload={
-                    "content": build_delegation_kickoff(contractor_name, body.text, task.id),
-                    "message_type": "delegate",
-                },
-                metadata={"taskId": task.id},
-            )
-            _emit_event_blocking(event, workspace, db, token=x_workspace_token)
-        except Exception:
-            logger.exception("a2a: kick-off message failed for task %s", task.id)
-
-    # Deliver a directed task.delegated event so a task-aware contractor can
-    # discover the assignment from its own event stream (Phase 2/3 native flow).
-    # Unhandled event type → passes through the pipeline and is persisted.
-    try:
-        delegated = Event(
-            type="workspace.task.delegated",
-            source=body.source,
-            target=contractor_addr,
-            payload={"task": _serialize_task(task)},
-            metadata={"taskId": task.id},
-            visibility="direct",
-        )
-        _emit_event_blocking(delegated, workspace, db, token=x_workspace_token)
-    except Exception:
-        logger.exception("a2a: task.delegated event failed for task %s", task.id)
-
-    db.commit()
-    db.refresh(task)
 
     # Blocking ("delegate and wait"): long-poll until the contractor drives the
     # task to a terminal state, then return it with its result artifact — so the
@@ -617,6 +699,7 @@ def list_tasks(
     state: Optional[str] = Query(None),
     contractor: Optional[str] = Query(None),
     delegator: Optional[str] = Query(None),
+    deleted: bool = Query(False),     # True → only the recycle bin; False → only live tasks
     db: Session = Depends(get_db),
     x_workspace_token: Optional[str] = Header(None),
     authorization: Optional[str] = Header(None),
@@ -638,7 +721,11 @@ def list_tasks(
         q = q.where(TaskRecord.delegator == delegator)
     q = q.order_by(TaskRecord.created_at.desc())
     rows = db.execute(q).scalars().all()
-    return success_response({"tasks": [_serialize_task(t) for t in rows]})
+    # Soft-delete is a task_metadata overlay (not a column), so partition in
+    # Python: the board asks for live tasks, the recycle bin for deleted ones.
+    tasks = [_serialize_task(t) for t in rows]
+    tasks = [t for t in tasks if bool(t["deleted"]) == deleted]
+    return success_response({"tasks": tasks})
 
 
 # Priority order for an agent's derived agenda (highest first). Mirrors
@@ -790,7 +877,7 @@ def update_task_status(
         )
 
     status_msg = _message("agent", body.text) if body.text else None
-    _apply_transition(task, new_state, status_msg)
+    _apply_transition(task, new_state, status_msg, actor=_agent_name(task.contractor))
     if body.artifact_text:
         task.artifacts = list(task.artifacts or []) + [
             {"id": task.id, "name": "result", "parts": [{"text": body.artifact_text}]}
@@ -824,7 +911,7 @@ def cancel_task(
     if task.state in TERMINAL_STATES:
         return json_response(ResponseCode.BAD_REQUEST, f"Task is already {task.state}")
 
-    _apply_transition(task, "canceled", _message("user", "Canceled by delegator."))
+    _apply_transition(task, "canceled", _message("user", "Canceled by delegator."), actor="user")
     try:
         db.commit()
     except StaleDataError:
@@ -896,6 +983,7 @@ def request_review(
         requestedBy=body.actor or _agent_name(task.delegator),
         comment=None,
     )
+    _append_event(task, "review_requested", actor=body.actor or _agent_name(task.delegator), detail=reviewer)
     task.history = list(task.history or []) + [_message("user", f"Review requested from {reviewer}.")]
 
     # Nudge the reviewer in the task's channel (best-effort).
@@ -948,6 +1036,7 @@ def approve_review(
         decidedBy=body.reviewer or review.get("reviewer"),
         comment=body.comment,
     )
+    _append_event(task, "review_approved", actor=body.reviewer or review.get("reviewer"))
     task.history = list(task.history or []) + [_message("user", "Review approved.")]
     return _commit_review(db, task)
 
@@ -983,6 +1072,7 @@ def request_changes(
         comment=body.comment,
     )
     contractor_name = _agent_name(task.contractor)
+    _append_event(task, "changes_requested", actor=body.reviewer or review.get("reviewer"), detail=body.comment)
     task.history = list(task.history or []) + [
         _message("user", f"Changes requested: {body.comment or '(no detail)'}")
     ]
@@ -1047,6 +1137,7 @@ def add_comment(
     })
     meta["comments"] = comments
     task.task_metadata = meta
+    _append_event(task, "commented", actor=_agent_name(body.author))
     task.updated_at = _now()
     try:
         db.commit()
@@ -1092,6 +1183,7 @@ def edit_dependency(
     add = body.action == "add"
     _edit_dep(task, "blockedBy", blocker.id, add)
     _edit_dep(blocker, "blocks", task.id, add)
+    _append_event(task, "dependency_added" if add else "dependency_removed", detail=blocker.id)
     try:
         db.commit()
     except StaleDataError:
@@ -1135,6 +1227,7 @@ def reassign_task(
 
     task.contractor = _agent_address(new_name)
     task.updated_at = _now()
+    _append_event(task, "reassigned", actor=body.actor, detail=f"{old_name} → {new_name}")
     task.history = list(task.history or []) + [_message("user", f"Reassigned from {old_name} to {new_name}.")]
 
     # Re-kick-off the new contractor with the original instruction.
@@ -1178,6 +1271,7 @@ def nudge_task(
     contractor_name = _agent_name(task.contractor)
     text = body.text or f"reminder — this task is still {_WIRE_STATE.get(task.state, task.state)}. Please continue or report status."
     task.updated_at = _now()
+    _append_event(task, "nudged", detail=contractor_name)
     task.history = list(task.history or []) + [_message("user", "Nudged the contractor.")]
     if task.channel_name:
         try:
@@ -1246,5 +1340,136 @@ def set_clarification(
                     logger.exception("a2a: clarification answer relay failed for task %s", task.id)
         task.history = list(task.history or []) + [_message("user", "Clarification resolved.")]
     task.task_metadata = meta
+    if body.action == "set":
+        _append_event(task, "clarification_requested",
+                      actor=body.actor or _agent_name(task.contractor),
+                      detail=(meta.get("clarification") or {}).get("question"))
+    else:
+        _append_event(task, "clarification_resolved", actor=body.actor, detail=body.answer)
     task.updated_at = _now()
+    return _commit_review(db, task)
+
+
+# ---------------------------------------------------------------------------
+# Subtasks — fan a parent task out to multiple contractors (team decomposition)
+# ---------------------------------------------------------------------------
+
+@router.post("/tasks/{task_id}/subtasks")
+def create_subtask(
+    task_id: str,
+    body: SubtaskRequest,
+    db: Session = Depends(get_db),
+    x_workspace_token: Optional[str] = Header(None),
+    authorization: Optional[str] = Header(None),
+):
+    """Break a parent task into a child delegation assigned to another agent.
+
+    The child is a first-class A2A task (its own lifecycle) linked to the parent
+    via task_metadata.parentId; the UI rolls up children's progress on the parent
+    card. The child inherits the parent's channel so its kick-off lands in the
+    same thread.
+    """
+    workspace = _resolve_workspace(db, body.network)
+    if not workspace:
+        return json_response(ResponseCode.NOT_FOUND, "Network not found")
+    if not _verify_workspace_access(workspace, x_workspace_token, authorization):
+        return json_response(ResponseCode.UNAUTHORIZED, "Invalid credentials")
+
+    parent = _load_task(db, str(workspace.id), task_id)
+    if not parent:
+        return json_response(ResponseCode.NOT_FOUND, "Task not found")
+    if parent.task_metadata and parent.task_metadata.get("parentId"):
+        return json_response(ResponseCode.BAD_REQUEST, "Subtasks cannot have their own subtasks")
+
+    contractor_addr = _agent_address(body.contractor)
+    contractor_name = _agent_name(contractor_addr)
+    if not _is_member(db, str(workspace.id), contractor_name):
+        return json_response(ResponseCode.BAD_REQUEST, f"Unknown contractor '{contractor_name}'")
+
+    child = _build_and_kickoff_task(
+        db, workspace,
+        source=body.source,
+        contractor_addr=contractor_addr,
+        text=body.text,
+        skill_id=body.skill_id,
+        context_id=parent.context_id,
+        parent_id=parent.id,
+        token=x_workspace_token,
+    )
+
+    # Record the fan-out on the parent's timeline (best-effort — the child is
+    # already committed and is the source of truth).
+    parent = _load_task(db, str(workspace.id), task_id)
+    if parent:
+        _append_event(parent, "subtask_created", actor=_agent_name(body.source), detail=contractor_name)
+        parent.updated_at = _now()
+        try:
+            db.commit()
+        except StaleDataError:
+            db.rollback()
+    db.refresh(child)
+    return success_response(_serialize_task(child))
+
+
+# ---------------------------------------------------------------------------
+# Soft delete / restore — a recycle bin for the board (overlay, not a real drop)
+# ---------------------------------------------------------------------------
+
+@router.post("/tasks/{task_id}/delete")
+def soft_delete_task(
+    task_id: str,
+    body: ActorRequest,
+    db: Session = Depends(get_db),
+    x_workspace_token: Optional[str] = Header(None),
+    authorization: Optional[str] = Header(None),
+):
+    """Move a task to the recycle bin (hidden from the board, fully restorable).
+
+    A task_metadata overlay — the TaskRecord is never destroyed, so the A2A
+    lifecycle/history survive and the task can be brought back intact.
+    """
+    workspace = _resolve_workspace(db, body.network)
+    if not workspace:
+        return json_response(ResponseCode.NOT_FOUND, "Network not found")
+    if not _verify_workspace_access(workspace, x_workspace_token, authorization):
+        return json_response(ResponseCode.UNAUTHORIZED, "Invalid credentials")
+
+    task = _load_task(db, str(workspace.id), task_id)
+    if not task:
+        return json_response(ResponseCode.NOT_FOUND, "Task not found")
+
+    meta = dict(task.task_metadata or {})
+    if not meta.get("deleted"):
+        meta["deleted"] = {"at": _iso(_now()), "by": body.actor or "user"}
+        task.task_metadata = meta
+        _append_event(task, "deleted", actor=body.actor)
+        task.updated_at = _now()
+    return _commit_review(db, task)
+
+
+@router.post("/tasks/{task_id}/restore")
+def restore_task(
+    task_id: str,
+    body: ActorRequest,
+    db: Session = Depends(get_db),
+    x_workspace_token: Optional[str] = Header(None),
+    authorization: Optional[str] = Header(None),
+):
+    """Bring a task back from the recycle bin."""
+    workspace = _resolve_workspace(db, body.network)
+    if not workspace:
+        return json_response(ResponseCode.NOT_FOUND, "Network not found")
+    if not _verify_workspace_access(workspace, x_workspace_token, authorization):
+        return json_response(ResponseCode.UNAUTHORIZED, "Invalid credentials")
+
+    task = _load_task(db, str(workspace.id), task_id)
+    if not task:
+        return json_response(ResponseCode.NOT_FOUND, "Task not found")
+
+    meta = dict(task.task_metadata or {})
+    if meta.get("deleted"):
+        meta.pop("deleted", None)
+        task.task_metadata = meta
+        _append_event(task, "restored", actor=body.actor)
+        task.updated_at = _now()
     return _commit_review(db, task)

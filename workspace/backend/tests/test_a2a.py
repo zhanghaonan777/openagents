@@ -696,3 +696,115 @@ def test_clarification_set_and_resolve(client, workspace):
     assert r2.json()["data"]["clarification"] is None
     # the answer is recorded as a comment
     assert any(c["text"] == "Postgres" for c in r2.json()["data"]["comments"])
+
+
+# ---------------------------------------------------------------------------
+# Subtasks — fan a parent out to multiple contractors
+# ---------------------------------------------------------------------------
+
+def _subtask(client, ws, parent_id, contractor="qa", text="write tests"):
+    return client.post(f"/v1/a2a/tasks/{parent_id}/subtasks", json={
+        "network": ws["id"], "source": "openagents:coder",
+        "contractor": contractor, "text": text,
+    }, headers=_hdr(ws))
+
+
+def test_subtask_links_to_parent(client, workspace):
+    _join(client, workspace, "pm")
+    _join(client, workspace, "coder")
+    _join(client, workspace, "qa")
+    parent = _delegate(client, workspace).json()["data"]["id"]
+    r = _subtask(client, workspace, parent, contractor="qa")
+    assert r.status_code == 200, r.text
+    child = r.json()["data"]
+    assert child["parentId"] == parent
+    assert child["contractor"] == "openagents:qa"
+    assert child["state"] == "submitted"
+    # the child is a first-class task that shows up in the list
+    listed = client.get("/v1/a2a/tasks", params={"network": workspace["id"]}, headers=_hdr(workspace)).json()["data"]["tasks"]
+    assert child["id"] in [t["id"] for t in listed]
+
+
+def test_subtask_records_event_on_parent(client, workspace):
+    _join(client, workspace, "pm"); _join(client, workspace, "coder"); _join(client, workspace, "qa")
+    parent = _delegate(client, workspace).json()["data"]["id"]
+    _subtask(client, workspace, parent, contractor="qa")
+    got = client.get(f"/v1/a2a/tasks/{parent}", params={"network": workspace["id"]}, headers=_hdr(workspace))
+    types = [e["type"] for e in got.json()["data"]["events"]]
+    assert "subtask_created" in types
+
+
+def test_subtask_of_subtask_rejected(client, workspace):
+    _join(client, workspace, "pm"); _join(client, workspace, "coder"); _join(client, workspace, "qa")
+    parent = _delegate(client, workspace).json()["data"]["id"]
+    child = _subtask(client, workspace, parent, contractor="qa").json()["data"]["id"]
+    r = _subtask(client, workspace, child, contractor="qa")
+    assert r.status_code == 400  # no nested subtasks
+
+
+def test_subtask_unknown_contractor_rejected(client, workspace):
+    _join(client, workspace, "pm"); _join(client, workspace, "coder")
+    parent = _delegate(client, workspace).json()["data"]["id"]
+    r = _subtask(client, workspace, parent, contractor="ghost")
+    assert r.status_code == 400
+
+
+# ---------------------------------------------------------------------------
+# Soft delete / restore (recycle bin)
+# ---------------------------------------------------------------------------
+
+def test_soft_delete_hides_then_restore_brings_back(client, workspace):
+    _join(client, workspace, "coder")
+    tid = _delegate(client, workspace).json()["data"]["id"]
+
+    d = client.post(f"/v1/a2a/tasks/{tid}/delete", json={"network": workspace["id"]}, headers=_hdr(workspace))
+    assert d.status_code == 200, d.text
+    assert d.json()["data"]["deleted"] is True
+
+    # default list excludes it; the recycle bin shows only it
+    live = client.get("/v1/a2a/tasks", params={"network": workspace["id"]}, headers=_hdr(workspace)).json()["data"]["tasks"]
+    assert tid not in [t["id"] for t in live]
+    binned = client.get("/v1/a2a/tasks", params={"network": workspace["id"], "deleted": "true"}, headers=_hdr(workspace)).json()["data"]["tasks"]
+    assert tid in [t["id"] for t in binned]
+
+    r = client.post(f"/v1/a2a/tasks/{tid}/restore", json={"network": workspace["id"]}, headers=_hdr(workspace))
+    assert r.json()["data"]["deleted"] is False
+    live2 = client.get("/v1/a2a/tasks", params={"network": workspace["id"]}, headers=_hdr(workspace)).json()["data"]["tasks"]
+    assert tid in [t["id"] for t in live2]
+
+
+def test_soft_delete_preserves_lifecycle(client, workspace):
+    """Deleting is an overlay — the A2A state/history survive intact."""
+    _join(client, workspace, "coder")
+    tid = _delegate(client, workspace).json()["data"]["id"]
+    client.post(f"/v1/a2a/tasks/{tid}/status", json={"network": workspace["id"], "state": "working"}, headers=_hdr(workspace))
+    client.post(f"/v1/a2a/tasks/{tid}/delete", json={"network": workspace["id"]}, headers=_hdr(workspace))
+    got = client.get(f"/v1/a2a/tasks/{tid}", params={"network": workspace["id"]}, headers=_hdr(workspace)).json()["data"]
+    assert got["state"] == "working"  # unchanged by the soft delete
+
+
+# ---------------------------------------------------------------------------
+# Structured timeline events
+# ---------------------------------------------------------------------------
+
+def test_timeline_records_create_and_status(client, workspace):
+    _join(client, workspace, "coder")
+    tid = _delegate(client, workspace).json()["data"]["id"]
+    client.post(f"/v1/a2a/tasks/{tid}/status", json={"network": workspace["id"], "state": "working"}, headers=_hdr(workspace))
+    events = client.get(f"/v1/a2a/tasks/{tid}", params={"network": workspace["id"]}, headers=_hdr(workspace)).json()["data"]["events"]
+    types = [e["type"] for e in events]
+    assert types[0] == "task_created"
+    assert "status_changed" in types
+    sc = next(e for e in events if e["type"] == "status_changed")
+    assert sc["detail"] == "working"
+
+
+def test_timeline_records_overlay_actions(client, workspace):
+    _join(client, workspace, "pm"); _join(client, workspace, "coder")
+    tid = _delegate(client, workspace).json()["data"]["id"]
+    client.post(f"/v1/a2a/tasks/{tid}/comments", json={"network": workspace["id"], "author": "openagents:pm", "text": "looks good"}, headers=_hdr(workspace))
+    client.post(f"/v1/a2a/tasks/{tid}/review/request", json={"network": workspace["id"]}, headers=_hdr(workspace))
+    events = client.get(f"/v1/a2a/tasks/{tid}", params={"network": workspace["id"]}, headers=_hdr(workspace)).json()["data"]["events"]
+    types = [e["type"] for e in events]
+    assert "commented" in types
+    assert "review_requested" in types
