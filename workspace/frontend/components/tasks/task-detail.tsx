@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import { cn } from '@/lib/utils';
-import { X, Check, MessageSquareWarning, Eye, Ban, ArrowRight, Hash, Send, Reply, HelpCircle, Bell } from 'lucide-react';
+import { X, Check, MessageSquareWarning, Eye, Ban, ArrowRight, Hash, Send, Reply, HelpCircle, Bell, ListTree, Plus, Trash2 } from 'lucide-react';
 import { AgentAvatar } from '@/components/agents/agent-avatar';
 import { MarkdownContent } from '@/components/chat/markdown-content';
 import { useWorkspace } from '@/lib/workspace-context';
@@ -24,6 +24,31 @@ const REVIEW_LABEL: Record<TaskReviewState, string> = {
 
 function agentName(addr: string): string {
   return addr.includes(':') ? addr.split(':').slice(1).join(':') : addr;
+}
+
+// Friendly labels + a dot accent for the structured activity timeline.
+const TASK_EVENT_LABEL: Record<string, string> = {
+  task_created: 'Created',
+  status_changed: 'Status',
+  review_requested: 'Review requested',
+  review_approved: 'Review approved',
+  changes_requested: 'Changes requested',
+  commented: 'Commented',
+  dependency_added: 'Blocker added',
+  dependency_removed: 'Blocker removed',
+  reassigned: 'Reassigned',
+  nudged: 'Nudged',
+  clarification_requested: 'Needs input',
+  clarification_resolved: 'Clarification resolved',
+  subtask_created: 'Subtask added',
+  deleted: 'Moved to trash',
+  restored: 'Restored',
+};
+function eventDot(type: string): string {
+  if (type === 'review_approved') return 'bg-emerald-500';
+  if (type === 'changes_requested' || type === 'clarification_requested') return 'bg-amber-500';
+  if (type === 'status_changed' || type === 'task_created') return 'bg-sky-500';
+  return 'bg-border';
 }
 
 /** Full task detail slide-over: the request, the deliverable, the peer-review
@@ -52,6 +77,27 @@ export function TaskDetail({ task, onClose, onChanged }: { task: A2ATask; onClos
   const agentNames = a2aTasks.map((t) => t.contractorName);
   const replyTarget = replyTo ? comments.find((c) => c.id === replyTo) : null;
   const commentById = (id?: string | null) => (id ? comments.find((c) => c.id === id) : null);
+
+  // Subtask fan-out: this task's children (and how many are done).
+  const isSubtask = !!task.parentId;
+  const children = a2aTasks.filter((t) => t.parentId === task.id && !t.deleted);
+  const childDone = children.filter((c) => c.state === 'completed').length;
+  const events = task.events && task.events.length > 0 ? task.events : null;
+  const [subContractor, setSubContractor] = useState('');
+  const [subText, setSubText] = useState('');
+
+  async function addSubtask() {
+    const text = subText.trim();
+    const contractor = subContractor || otherAgents[0]?.agentName;
+    if (!text || !contractor) return;
+    setSubText('');
+    setSubContractor('');
+    await act(() => workspaceApi.createA2ASubtask(task.id, {
+      source: `human:${currentUser?.name || currentUser?.id || 'you'}`,
+      contractor,
+      text,
+    }));
+  }
 
   async function sendComment() {
     const text = draft.trim();
@@ -149,6 +195,62 @@ export function TaskDetail({ task, onClose, onChanged }: { task: A2ATask; onClos
             <p className="text-[13px] leading-relaxed text-foreground/90 whitespace-pre-wrap">{taskRequestText(task)}</p>
           </section>
 
+          {/* Subtasks — fan this work out to other agents */}
+          {!isSubtask && (
+            <section>
+              <h4 className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground mb-1.5 flex items-center justify-between">
+                <span className="inline-flex items-center gap-1"><ListTree className="size-3" /> Subtasks</span>
+                {children.length > 0 && <span className="font-mono text-muted-foreground/60">{childDone}/{children.length} done</span>}
+              </h4>
+              {children.length > 0 && (
+                <ul className="space-y-1 mb-2">
+                  {children.map((c) => {
+                    const m = taskStatusMeta(c.state);
+                    return (
+                      <li key={c.id} className="flex items-center gap-1.5 text-[12px]">
+                        <AgentAvatar name={c.contractorName} size={16} className="shrink-0" />
+                        <span className="truncate flex-1">{taskRequestText(c)}</span>
+                        <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded shrink-0" style={{ color: m.dot, background: `${m.dot}1f` }}>{m.label}</span>
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+              {!terminal && otherAgents.length > 0 ? (
+                <div className="flex items-center gap-1.5">
+                  <select
+                    value={subContractor}
+                    disabled={busy}
+                    onChange={(e) => setSubContractor(e.target.value)}
+                    className="h-7 text-[12px] rounded-md bg-muted/50 border border-border px-1.5 outline-none shrink-0 max-w-[35%]"
+                    title="Assign the subtask to"
+                  >
+                    <option value="">{otherAgents[0]?.agentName}</option>
+                    {otherAgents.map((a) => <option key={a.agentName} value={a.agentName}>{a.agentName}</option>)}
+                  </select>
+                  <input
+                    value={subText}
+                    disabled={busy}
+                    onChange={(e) => setSubText(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addSubtask(); } }}
+                    placeholder="Break off a subtask…"
+                    className="flex-1 min-w-0 h-7 text-[12px] rounded-md bg-muted/50 border border-border px-2 outline-none focus:ring-1 focus:ring-primary/40"
+                  />
+                  <button
+                    disabled={busy || !subText.trim()}
+                    onClick={addSubtask}
+                    className="shrink-0 inline-flex items-center justify-center size-7 rounded-md bg-primary text-primary-foreground disabled:opacity-40 hover:opacity-90"
+                    title="Add subtask"
+                  >
+                    <Plus className="size-3.5" />
+                  </button>
+                </div>
+              ) : children.length === 0 ? (
+                <p className="text-[12px] text-muted-foreground/70">No subtasks.</p>
+              ) : null}
+            </section>
+          )}
+
           {/* Deliverable */}
           {artifact && (
             <section>
@@ -212,8 +314,32 @@ export function TaskDetail({ task, onClose, onChanged }: { task: A2ATask; onClos
             </section>
           )}
 
-          {/* Status history timeline */}
-          {task.history && task.history.length > 0 && (
+          {/* Activity — structured, typed timeline (status, reviews, comments, …) */}
+          {events ? (
+            <section>
+              <h4 className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground mb-2">Activity</h4>
+              <ol className="relative border-l border-border ml-1.5 space-y-3">
+                {events.map((e, i) => {
+                  const label = TASK_EVENT_LABEL[e.type] || e.type.replace(/_/g, ' ');
+                  const isStatus = e.type === 'status_changed';
+                  const subline = !isStatus && e.detail ? e.detail : null;
+                  return (
+                    <li key={i} className="ml-3.5">
+                      <span className={cn('absolute -left-[5px] mt-1 size-2 rounded-full', eventDot(e.type))} />
+                      <div className="flex items-baseline gap-2 flex-wrap">
+                        <span className="text-[11.5px] font-semibold text-foreground/80">
+                          {label}{isStatus && e.detail ? <span className="text-foreground/60"> → {e.detail}</span> : null}
+                        </span>
+                        {e.actor && <span className="text-[10.5px] text-muted-foreground">{e.actor}</span>}
+                        {e.at && <span className="text-[10px] font-mono text-muted-foreground/60">{timeAgo(e.at)}</span>}
+                      </div>
+                      {subline && <p className="text-[12px] leading-snug text-foreground/75 mt-0.5 whitespace-pre-wrap">{subline}</p>}
+                    </li>
+                  );
+                })}
+              </ol>
+            </section>
+          ) : task.history && task.history.length > 0 ? (
             <section>
               <h4 className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground mb-2">History</h4>
               <ol className="relative border-l border-border ml-1.5 space-y-3">
@@ -232,7 +358,7 @@ export function TaskDetail({ task, onClose, onChanged }: { task: A2ATask; onClos
                 })}
               </ol>
             </section>
-          )}
+          ) : null}
 
           {/* Dependencies */}
           <section>
@@ -350,12 +476,19 @@ export function TaskDetail({ task, onClose, onChanged }: { task: A2ATask; onClos
             <span className="inline-flex items-center gap-0.5 min-w-0 truncate"><Hash className="size-3 shrink-0" /><span className="truncate">{task.channel}</span></span>
           )}
           <span className="font-mono shrink-0">{timeAgo(task.createdAt)}</span>
-          {!terminal && (
-            <button disabled={busy} onClick={() => act(() => workspaceApi.cancelA2ATask(task.id))}
-              className="ml-auto inline-flex items-center gap-1 text-[11px] font-medium text-red-600 dark:text-red-400 hover:underline disabled:opacity-50">
-              <Ban className="size-3" /> Cancel
+          <div className="ml-auto flex items-center gap-3">
+            {!terminal && (
+              <button disabled={busy} onClick={() => act(() => workspaceApi.cancelA2ATask(task.id))}
+                className="inline-flex items-center gap-1 text-[11px] font-medium text-red-600 dark:text-red-400 hover:underline disabled:opacity-50">
+                <Ban className="size-3" /> Cancel
+              </button>
+            )}
+            <button disabled={busy} onClick={() => act(async () => { await workspaceApi.softDeleteA2ATask(task.id); onClose(); })}
+              className="inline-flex items-center gap-1 text-[11px] font-medium hover:text-foreground hover:underline disabled:opacity-50"
+              title="Move to recycle bin">
+              <Trash2 className="size-3" /> Trash
             </button>
-          )}
+          </div>
         </div>
       </div>
     </div>

@@ -127,6 +127,11 @@ export function SidebarContent() {
   const workingCount = recentAgents.filter((a) => teamActivity[a.agentName]?.working).length;
   const tasksInProgress = a2aTasks.filter((t) => t.state === 'submitted' || t.state === 'working').length;
   const reviewsPending = a2aTasks.filter((t) => t.review?.state === 'pending').length;
+  // Items needing a human (drives the Team nav badge): clarifications, reviews,
+  // requested changes, and failures. Mirrors the Team view's attention queue.
+  const teamAttention = a2aTasks.filter((t) => !t.deleted && (
+    t.clarification || t.review?.state === 'pending' || t.review?.state === 'changes_requested' || t.state === 'failed' || t.state === 'rejected'
+  )).length;
 
   const isUnclaimed = workspace && !workspace.creatorEmail;
   const isOwnedByUser = workspace && user && workspace.creatorEmail === user.email;
@@ -355,6 +360,7 @@ export function SidebarContent() {
                   <NavButton active={viewMode === 'routines'} icon={<CalendarClock className="size-[15px]" />} label="Routines" count={routines.filter((r) => r.status === 'active').length} onClick={() => setViewMode('routines')} />
                   <NavButton active={viewMode === 'knowledge'} icon={<BookOpen className="size-[15px]" />} label="Knowledge" count={knowledge.length} onClick={() => setViewMode('knowledge')} />
                   <NavButton active={viewMode === 'tasks'} icon={<ListTodo className="size-[15px]" />} label="Tasks" count={todos.filter((t) => t.status === 'pending' || t.status === 'in_progress').length} onClick={() => setViewMode('tasks')} />
+                  <NavButton active={viewMode === 'team'} icon={<Users className="size-[15px]" />} label="Team" alert={teamAttention} onClick={() => setViewMode('team')} />
                   <NavButton active={viewMode === 'review'} icon={<ClipboardCheck className="size-[15px]" />} label="Review" alert={reviewsPending} onClick={() => setViewMode('review')} />
                   <NavButton active={viewMode === 'timeline'} icon={<Activity className="size-[15px]" />} label="Timeline" count={workingCount > 0 ? workingCount : undefined} onClick={() => setViewMode('timeline')} />
                   <NavButton active={viewMode === 'inbox'} icon={<Inbox className="size-[15px]" />} label="Inbox" count={unreadNotificationCount > 0 ? unreadNotificationCount : undefined} onClick={() => setViewMode('inbox')} />

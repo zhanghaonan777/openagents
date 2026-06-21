@@ -1,8 +1,8 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { cn } from '@/lib/utils';
-import { ListTodo, RefreshCw, Eye, Check, MessageSquareWarning, BadgeCheck, Lock, Link2, MessageSquare, Search, Plus, ArrowDownUp, Bell, Ban, HelpCircle } from 'lucide-react';
+import { ListTodo, RefreshCw, Eye, Check, MessageSquareWarning, BadgeCheck, Lock, Link2, MessageSquare, Search, Plus, ArrowDownUp, Bell, Ban, HelpCircle, Trash2, RotateCcw, ListTree, CornerDownRight } from 'lucide-react';
 import { useWorkspace } from '@/lib/workspace-context';
 import { useLayout } from '@/components/layout/layout-context';
 import { AgentAvatar } from '@/components/agents/agent-avatar';
@@ -50,7 +50,7 @@ const BOARD_COLS: { id: string; label: string; dot: string; states: A2ATaskState
   { id: 'approved', label: 'Approved', dot: '#10b981', states: [] },
 ];
 
-function TaskCard({ task, flash, blocked, onOpen, onChanged }: { task: A2ATask; flash: boolean; blocked: boolean; onOpen: () => void; onChanged: () => void }) {
+function TaskCard({ task, flash, blocked, sub, isSubtask, onOpen, onChanged }: { task: A2ATask; flash: boolean; blocked: boolean; sub?: { done: number; total: number }; isSubtask?: boolean; onOpen: () => void; onChanged: () => void }) {
   const who = task.contractorName;
   const railColor = colorFromName(who);
   const terminal = ['completed', 'failed', 'canceled', 'rejected'].includes(task.state);
@@ -87,6 +87,11 @@ function TaskCard({ task, flash, blocked, onOpen, onChanged }: { task: A2ATask; 
         flash && 'ring-2 ring-primary/45',
       )}
     >
+      {isSubtask && (
+        <div className="mb-1 inline-flex items-center gap-1 text-[10px] font-medium text-muted-foreground/80">
+          <CornerDownRight className="size-2.5" /> subtask
+        </div>
+      )}
       <p className={cn('text-[12.5px] leading-snug text-pretty mb-2.5', terminal && 'text-muted-foreground', failed && 'line-through')}>
         {taskRequestText(task)}
       </p>
@@ -114,9 +119,14 @@ function TaskCard({ task, flash, blocked, onOpen, onChanged }: { task: A2ATask; 
         </div>
       )}
 
-      {/* Live signals: needs-input / blocked / dependencies / comments */}
-      {(needsInput || blocked || blockedByCount > 0 || blocksCount > 0 || commentCount > 0) && (
+      {/* Live signals: needs-input / blocked / dependencies / subtasks / comments */}
+      {(needsInput || blocked || blockedByCount > 0 || blocksCount > 0 || commentCount > 0 || (sub && sub.total > 0)) && (
         <div className="mb-2 flex flex-wrap items-center gap-1.5 text-[10px]">
+          {sub && sub.total > 0 && (
+            <span className={cn('inline-flex items-center gap-0.5', sub.done === sub.total ? 'text-emerald-600 dark:text-emerald-400' : 'text-muted-foreground')} title={`${sub.done}/${sub.total} subtasks done`}>
+              <ListTree className="size-2.5" /> {sub.done}/{sub.total}
+            </span>
+          )}
           {needsInput && (
             <span className="inline-flex items-center gap-1 font-semibold px-1.5 py-0.5 rounded text-amber-700 bg-amber-500/20 dark:text-amber-300" title={task.clarification?.question}>
               <HelpCircle className="size-2.5" /> Needs input
@@ -225,7 +235,17 @@ export function TasksView() {
   const [sort, setSort] = useState<SortKey>('recent');
   const [delegateOpen, setDelegateOpen] = useState(false);
   const [dragOverCol, setDragOverCol] = useState<string | null>(null);
+  const [showTrash, setShowTrash] = useState(false);
+  const [trashed, setTrashed] = useState<A2ATask[]>([]);
+  const [trashBusy, setTrashBusy] = useState(false);
   const detailTask = detailId ? a2aTasks.find((t) => t.id === detailId) || null : null;
+
+  const loadTrash = useCallback(async () => {
+    setTrashBusy(true);
+    try { setTrashed((await workspaceApi.listA2ATasks({ deleted: true })).tasks); }
+    finally { setTrashBusy(false); }
+  }, []);
+  useEffect(() => { if (showTrash) loadTrash(); }, [showTrash, loadTrash]);
 
   // Drag-and-drop the *review workflow* (the human-driven transitions). Dragging
   // a card onto a column maps to a review action; protocol-driven columns (the
@@ -260,6 +280,19 @@ export function TasksView() {
 
   const blockedSet = useMemo(() => buildBlockedSet(a2aTasks), [a2aTasks]);
   const owners = useMemo(() => Array.from(new Set(a2aTasks.map((t) => t.contractorName))).sort(), [a2aTasks]);
+
+  // Roll each parent's children up to {done,total} for the board card chip.
+  const subStats = useMemo(() => {
+    const m = new Map<string, { done: number; total: number }>();
+    for (const t of a2aTasks) {
+      if (!t.parentId) continue;
+      const s = m.get(t.parentId) || { done: 0, total: 0 };
+      s.total++;
+      if (t.state === 'completed') s.done++;
+      m.set(t.parentId, s);
+    }
+    return m;
+  }, [a2aTasks]);
 
   // Apply search + owner filter + sort once; columns slice the result.
   const visible = useMemo(() => {
@@ -330,14 +363,24 @@ export function TasksView() {
           >
             <Plus className="size-3.5" /> Delegate
           </button>
-          <button onClick={refreshA2ATasks} className="p-1.5 rounded-md hover:bg-zinc-100 dark:hover:bg-zinc-800 text-muted-foreground" title="Refresh">
+          <button
+            onClick={() => setShowTrash((v) => !v)}
+            className={cn(
+              'h-7 inline-flex items-center gap-1 text-[12px] rounded-md border px-2',
+              showTrash ? 'bg-primary/10 border-primary/40 text-foreground' : 'bg-muted/50 border-border hover:bg-muted text-muted-foreground',
+            )}
+            title={showTrash ? 'Back to the board' : 'Recycle bin'}
+          >
+            <Trash2 className="size-3.5" /> {showTrash ? 'Board' : 'Trash'}
+          </button>
+          <button onClick={() => (showTrash ? loadTrash() : refreshA2ATasks())} className="p-1.5 rounded-md hover:bg-zinc-100 dark:hover:bg-zinc-800 text-muted-foreground" title="Refresh">
             <RefreshCw className="size-3.5" />
           </button>
         </div>
       </div>
 
       {/* Status summary strip */}
-      {a2aTasks.length > 0 && (
+      {!showTrash && a2aTasks.length > 0 && (
         <div className="shrink-0 px-4 py-2 border-b border-border flex items-center gap-3 flex-wrap">
           <div className="flex items-center gap-2 min-w-[140px] flex-1 max-w-xs">
             <div className="h-1.5 flex-1 rounded-full bg-muted overflow-hidden">
@@ -354,8 +397,36 @@ export function TasksView() {
         </div>
       )}
 
-      {/* Board */}
-      {a2aTasks.length === 0 ? (
+      {/* Recycle bin */}
+      {showTrash ? (
+        <div className="flex-1 min-h-0 overflow-y-auto p-4">
+          {trashed.length === 0 ? (
+            <div className="flex flex-col items-center justify-center text-muted-foreground gap-2 py-16">
+              <Trash2 className="size-8 opacity-30" />
+              <p className="text-sm">{trashBusy ? 'Loading…' : 'Recycle bin is empty'}</p>
+            </div>
+          ) : (
+            <ul className="max-w-2xl mx-auto space-y-1.5">
+              {trashed.map((t) => (
+                <li key={t.id} className="flex items-center gap-2.5 bg-background border border-border rounded-lg px-3 py-2">
+                  <AgentAvatar name={t.contractorName} size={20} className="shrink-0" />
+                  <div className="min-w-0 flex-1">
+                    <p className="text-[12.5px] truncate text-foreground/80 line-through">{taskRequestText(t)}</p>
+                    <p className="text-[10.5px] text-muted-foreground">{t.contractorName} · deleted {timeAgo(t.deletedAt || t.updatedAt)}</p>
+                  </div>
+                  <button
+                    disabled={trashBusy}
+                    onClick={async () => { await workspaceApi.restoreA2ATask(t.id); await loadTrash(); refreshA2ATasks(); }}
+                    className="shrink-0 inline-flex items-center gap-1 text-[11.5px] font-medium px-2.5 py-1 rounded-md border border-border hover:bg-muted disabled:opacity-50"
+                  >
+                    <RotateCcw className="size-3" /> Restore
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      ) : a2aTasks.length === 0 ? (
         <div className="flex flex-1 flex-col items-center justify-center text-muted-foreground gap-2">
           <ListTodo className="size-8 opacity-30" />
           <p className="text-sm">No delegations yet</p>
@@ -381,9 +452,21 @@ export function TasksView() {
                 <div className="flex items-center gap-2 px-2 pt-1.5 pb-2">
                   <span className="size-2 rounded-full" style={{ background: col.dot }} />
                   <span className="text-xs font-semibold">{col.label}</span>
-                  <span className="ml-auto text-[11px] text-muted-foreground bg-background border border-border rounded-full min-w-5 text-center px-1.5">
-                    {items.length}
-                  </span>
+                  <div className="ml-auto flex items-center gap-1">
+                    {col.id === 'submitted' && (
+                      <button
+                        onClick={(e) => { e.stopPropagation(); setDelegateOpen(true); }}
+                        disabled={agents.length === 0}
+                        className="inline-flex items-center justify-center size-5 rounded-md text-muted-foreground hover:bg-background hover:text-foreground disabled:opacity-40"
+                        title="Delegate a new task"
+                      >
+                        <Plus className="size-3.5" />
+                      </button>
+                    )}
+                    <span className="text-[11px] text-muted-foreground bg-background border border-border rounded-full min-w-5 text-center px-1.5">
+                      {items.length}
+                    </span>
+                  </div>
                 </div>
                 <div className="flex-1 min-h-0 overflow-y-auto flex flex-col gap-1.5 px-0.5 pb-1.5">
                   {items.map((t) => (
@@ -392,6 +475,8 @@ export function TasksView() {
                       task={t}
                       flash={t.id === flashTaskId}
                       blocked={blockedSet.has(t.id)}
+                      sub={subStats.get(t.id)}
+                      isSubtask={!!t.parentId}
                       onOpen={() => setDetailId(t.id)}
                       onChanged={refreshA2ATasks}
                     />

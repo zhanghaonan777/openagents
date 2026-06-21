@@ -906,12 +906,43 @@ class WorkspaceApi {
     return this.request(`/v1/a2a/agents?${params}`);
   }
 
-  async listA2ATasks(opts?: { contextId?: string; state?: string; contractor?: string }): Promise<{ tasks: import('./types').A2ATask[] }> {
+  async listA2ATasks(opts?: { contextId?: string; state?: string; contractor?: string; deleted?: boolean }): Promise<{ tasks: import('./types').A2ATask[] }> {
     const params = new URLSearchParams({ network: this.workspaceId });
     if (opts?.contextId) params.set('context_id', opts.contextId);
     if (opts?.state) params.set('state', opts.state);
     if (opts?.contractor) params.set('contractor', opts.contractor);
+    if (opts?.deleted) params.set('deleted', 'true');
     return this.request(`/v1/a2a/tasks?${params}`);
+  }
+
+  /** Fan a parent task out to another agent as a linked subtask. */
+  async createA2ASubtask(taskId: string, p: { source: string; contractor: string; text: string; skillId?: string }): Promise<import('./types').A2ATask> {
+    return this.request(`/v1/a2a/tasks/${taskId}/subtasks`, {
+      method: 'POST',
+      body: JSON.stringify({
+        network: this.workspaceId,
+        source: p.source,
+        contractor: p.contractor,
+        text: p.text,
+        skill_id: p.skillId,
+      }),
+    });
+  }
+
+  /** Move a task to the recycle bin (reversible overlay, not a hard delete). */
+  async softDeleteA2ATask(taskId: string, p?: { actor?: string }): Promise<import('./types').A2ATask> {
+    return this.request(`/v1/a2a/tasks/${taskId}/delete`, {
+      method: 'POST',
+      body: JSON.stringify({ network: this.workspaceId, actor: p?.actor }),
+    });
+  }
+
+  /** Restore a task from the recycle bin. */
+  async restoreA2ATask(taskId: string, p?: { actor?: string }): Promise<import('./types').A2ATask> {
+    return this.request(`/v1/a2a/tasks/${taskId}/restore`, {
+      method: 'POST',
+      body: JSON.stringify({ network: this.workspaceId, actor: p?.actor }),
+    });
   }
 
   async createA2ATask(p: {

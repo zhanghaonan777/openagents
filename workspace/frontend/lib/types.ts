@@ -272,6 +272,15 @@ export interface TaskComment {
   replyTo?: string | null;   // id of the comment this replies to
 }
 
+/** A typed entry in a task's structured activity timeline (task_metadata.events),
+ *  distinct from the raw A2A message history. */
+export interface TaskEvent {
+  type: string;              // status_changed | review_* | commented | reassigned | …
+  at: string | null;
+  actor?: string | null;
+  detail?: string | null;
+}
+
 export interface A2ATask {
   id: string;
   contextId: string | null;
@@ -287,6 +296,10 @@ export interface A2ATask {
   blockedBy?: string[];     // task ids this task waits on
   blocks?: string[];        // task ids waiting on this one
   clarification?: { state: string; question: string; askedAt?: string | null; askedBy?: string | null } | null;
+  parentId?: string | null; // set on a subtask — links it to its parent delegation
+  events?: TaskEvent[];      // structured activity timeline (oldest first)
+  deleted?: boolean;         // soft-deleted (in the recycle bin)
+  deletedAt?: string | null;
   artifacts: A2AArtifact[];
   history: { role: string; parts: { text?: string }[]; timestamp?: string | null }[];
   createdAt: string | null;
