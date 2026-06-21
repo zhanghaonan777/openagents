@@ -28,6 +28,12 @@ export function AgentProfilePanel() {
   const [tab, setTab] = useState<'tasks' | 'activity' | 'profile'>('activity');
   const [activity, setActivity] = useState<WorkspaceMessage[]>([]);
   const [activityLoading, setActivityLoading] = useState(false);
+  const [expandedActivity, setExpandedActivity] = useState<Set<string>>(new Set());
+  const toggleExpanded = (id: string) => setExpandedActivity((prev) => {
+    const next = new Set(prev);
+    if (next.has(id)) next.delete(id); else next.add(id);
+    return next;
+  });
 
   // Fetch the agent's session activity on open, then live-poll it (silent) so the
   // timeline stays current while the panel is open.
@@ -51,6 +57,18 @@ export function AgentProfilePanel() {
   useEffect(() => {
     if (selectedAgentName) refreshA2ATasks();
   }, [selectedAgentName, refreshA2ATasks]);
+
+  // Derived agenda ("what's mine now") — the backend briefing endpoint, ordered
+  // review-pickup → rework → working. Refetched when the agent or tasks change.
+  const [briefing, setBriefing] = useState<Awaited<ReturnType<typeof workspaceApi.getA2ABriefing>> | null>(null);
+  useEffect(() => {
+    if (!selectedAgentName) { setBriefing(null); return; }
+    let alive = true;
+    workspaceApi.getA2ABriefing(selectedAgentName)
+      .then((b) => { if (alive) setBriefing(b); })
+      .catch(() => { if (alive) setBriefing(null); });
+    return () => { alive = false; };
+  }, [selectedAgentName, a2aTasks]);
 
   // Auto-scroll the session timeline (oldest → newest), but stick to the bottom
   // only when the user is already there — never hijack an upward scroll.
@@ -252,6 +270,33 @@ export function AgentProfilePanel() {
           {/* Tasks — this agent as contractor */}
           {tab === 'tasks' && (
             <div className="flex-1 overflow-y-auto">
+              {briefing && briefing.items.length > 0 && (
+                <div className="px-4 py-3 border-b border-border bg-muted/30">
+                  <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground mb-1.5">
+                    Up next · {briefing.items.length}
+                  </p>
+                  <div className="flex flex-col gap-1">
+                    {briefing.items.slice(0, 5).map((it) => {
+                      const tone = it.priority === 'review_pickup'
+                        ? 'text-amber-700 bg-amber-500/12 dark:text-amber-300'
+                        : it.priority === 'rework'
+                          ? 'text-red-700 bg-red-500/12 dark:text-red-300'
+                          : 'text-sky-700 bg-sky-500/12 dark:text-sky-300';
+                      const verb = it.kind === 'review' ? 'Review' : it.priority === 'rework' ? 'Rework' : 'Work';
+                      return (
+                        <button
+                          key={it.taskId}
+                          onClick={() => jumpToTask(it.taskId)}
+                          className="w-full flex items-center gap-2 text-left rounded-md px-1.5 py-1 hover:bg-muted transition-colors"
+                        >
+                          <span className={cn('text-[9.5px] font-bold px-1.5 py-0.5 rounded shrink-0', tone)}>{verb}</span>
+                          <span className="text-[12px] truncate flex-1">{it.request || it.taskId.slice(0, 8)}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
               {agentTasks.length === 0 ? (
                 <div className="flex flex-col items-center justify-center h-full gap-2 text-muted-foreground">
                   <ListTodo className="size-7 opacity-30" />
@@ -321,15 +366,14 @@ export function AgentProfilePanel() {
                       const Icon = k.key === 'tool' ? Terminal : k.key === 'thinking' ? Brain : k.key === 'delegate' ? Send : MessageSquare;
                       // Hide internal A2A kick-off plumbing, same as the chat view.
                       const text = stripDelegationPlumbing(m.content);
+                      const expanded = expandedActivity.has(m.messageId);
+                      // Tool/thinking steps clamp by default and expand inline; the
+                      // tool name is surfaced as the chip label (e.g. "Bash").
+                      const clampable = k.key === 'tool' || k.key === 'thinking';
                       return (
                         <div
                           key={m.messageId}
-                          role="button"
-                          tabIndex={0}
-                          onClick={() => openSession(m.sessionId || '')}
-                          onKeyDown={(e) => { if (e.key === 'Enter') openSession(m.sessionId || ''); }}
-                          title={m.sessionId ? 'Open this session' : undefined}
-                          className="group px-4 py-2.5 cursor-pointer hover:bg-muted/40 transition-colors"
+                          className="group px-4 py-2.5 hover:bg-muted/40 transition-colors"
                         >
                           <div className="flex items-center gap-2 mb-1">
                             <span className={cn('inline-flex items-center gap-1 text-[10px] font-semibold px-1.5 py-0.5 rounded', k.chip)}>
@@ -337,20 +381,32 @@ export function AgentProfilePanel() {
                               {k.label}
                             </span>
                             {m.sessionId && (
-                              <span className="inline-flex items-center gap-0.5 text-[10px] text-muted-foreground/80 min-w-0 truncate">
+                              <button
+                                onClick={() => openSession(m.sessionId || '')}
+                                className="inline-flex items-center gap-0.5 text-[10px] text-muted-foreground/80 min-w-0 truncate hover:text-foreground"
+                                title="Open this session"
+                              >
                                 <Hash className="size-2.5 shrink-0" />
                                 <span className="truncate">{m.sessionId}</span>
-                              </span>
+                              </button>
                             )}
                             <span className="ml-auto text-[10px] font-mono text-muted-foreground/70 shrink-0">{timeAgo(m.createdAt)}</span>
-                            <ChevronRight className="size-3 shrink-0 -mr-1 text-transparent group-hover:text-muted-foreground/60 transition-colors" />
+                            {clampable && (
+                              <button
+                                onClick={() => toggleExpanded(m.messageId)}
+                                className="shrink-0 text-muted-foreground/60 hover:text-foreground"
+                                title={expanded ? 'Collapse' : 'Expand'}
+                              >
+                                <ChevronRight className={cn('size-3 transition-transform', expanded && 'rotate-90')} />
+                              </button>
+                            )}
                           </div>
                           {k.key === 'tool' ? (
-                            <p className="text-[11.5px] font-mono text-foreground/75 bg-muted/50 border border-border/50 rounded px-2 py-1 whitespace-pre-wrap break-all line-clamp-4">{k.detail}</p>
+                            <p className={cn('text-[11.5px] font-mono text-foreground/75 bg-muted/50 border border-border/50 rounded px-2 py-1 whitespace-pre-wrap break-all', !expanded && 'line-clamp-4')}>{k.detail}</p>
                           ) : k.key === 'thinking' ? (
-                            <p className="text-[12.5px] italic leading-snug text-muted-foreground whitespace-pre-wrap line-clamp-6">{text}</p>
+                            <p className={cn('text-[12.5px] italic leading-snug text-muted-foreground whitespace-pre-wrap', !expanded && 'line-clamp-6')}>{text}</p>
                           ) : (
-                            <div className="text-[13px] leading-relaxed text-foreground/90 break-words" onClick={(e) => e.stopPropagation()}>
+                            <div className="text-[13px] leading-relaxed text-foreground/90 break-words">
                               <MarkdownContent content={text || '…'} agentNames={agentNames} />
                             </div>
                           )}

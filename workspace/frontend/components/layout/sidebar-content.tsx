@@ -4,7 +4,7 @@ import { useState, useEffect, useMemo } from 'react';
 import {
   Plus, MessageSquare, FileText, Globe, PlusSquare, Sparkles, BookOpen,
   Settings, Copy, Check, ListTodo, CalendarClock, Inbox, Activity,
-  LogIn, LogOut, Shield, Moon, Sun, KeyRound, X, Crown, Users,
+  LogIn, LogOut, Shield, Moon, Sun, KeyRound, X, Crown, Users, ClipboardCheck, ClipboardPlus,
 } from 'lucide-react';
 import { useTheme } from 'next-themes';
 import { ScrollArea } from '@/components/ui/scroll-area';
@@ -32,6 +32,7 @@ import { toast } from 'sonner';
 import type { WorkspaceCollaborator } from '@/lib/types';
 import { useOpenAgentsAuth } from '@/lib/openagents-auth-context';
 import { NewThreadDialog } from '@/components/threads/new-thread-dialog';
+import { DelegateDialog } from '@/components/agents/delegate-dialog';
 
 // ── Navigation button helper ──
 
@@ -40,12 +41,14 @@ function NavButton({
   icon,
   label,
   count,
+  alert,
   onClick,
 }: {
   active?: boolean;
   icon: React.ReactNode;
   label: string;
   count?: number;
+  alert?: number;   // attention badge (amber pill), e.g. reviews awaiting action
   onClick?: () => void;
 }) {
   return (
@@ -60,6 +63,11 @@ function NavButton({
     >
       <span className={active ? 'opacity-100' : 'opacity-60'}>{icon}</span>
       <span className="flex-1 text-left">{label}</span>
+      {alert !== undefined && alert > 0 && (
+        <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-amber-500/15 text-amber-700 dark:text-amber-300">
+          {alert} review{alert > 1 ? 's' : ''}
+        </span>
+      )}
       {count !== undefined && count > 0 && (
         <span className="text-xs text-muted-foreground">{count}</span>
       )}
@@ -71,7 +79,8 @@ function NavButton({
 
 export function SidebarContent() {
   const { isSidebarOpen, sidebarToggle, viewMode, setViewMode, setSelectedAgentName, openRoleLibrary } = useLayout();
-  const { agents, sessions, files, browserTabs, createSession, workspace, token, refreshWorkspace, todos, routines, knowledge, currentUser, onlineUsers, unreadNotificationCount, teamActivity, a2aTasks } = useWorkspace();
+  const { agents, sessions, files, browserTabs, createSession, workspace, token, refreshWorkspace, todos, routines, knowledge, currentUser, onlineUsers, unreadNotificationCount, teamActivity, a2aTasks, refreshA2ATasks } = useWorkspace();
+  const [assignTo, setAssignTo] = useState<string | null>(null);
   const { user, isOpenAgentsDomain, signIn, signOut } = useOpenAgentsAuth();
   const { theme, setTheme } = useTheme();
   const [mounted, setMounted] = useState(false);
@@ -105,12 +114,19 @@ export function SidebarContent() {
     }
   };
 
-  // Filter sidebar to only show online + recently-seen agents
-  const recentAgents = useMemo(() => agents.filter(isRecentAgent), [agents]);
+  // Show the whole team roster (online + offline), online first then recently-seen.
+  // Offline members are styled as such (see the agent rows) rather than hidden —
+  // hiding them made the team and the Tasks/Review nav vanish when no launcher
+  // happened to be running.
+  const recentAgents = useMemo(() => {
+    const rank = (a: typeof agents[number]) => (a.status === 'online' ? 0 : isRecentAgent(a) ? 1 : 2);
+    return [...agents].sort((a, b) => rank(a) - rank(b) || a.agentName.localeCompare(b.agentName));
+  }, [agents]);
   const onlineCount = agents.filter((a) => a.status === 'online').length;
   const agentNames = agents.map((a) => a.agentName);
   const workingCount = recentAgents.filter((a) => teamActivity[a.agentName]?.working).length;
   const tasksInProgress = a2aTasks.filter((t) => t.state === 'submitted' || t.state === 'working').length;
+  const reviewsPending = a2aTasks.filter((t) => t.review?.state === 'pending').length;
 
   const isUnclaimed = workspace && !workspace.creatorEmail;
   const isOwnedByUser = workspace && user && workspace.creatorEmail === user.email;
@@ -254,25 +270,42 @@ export function SidebarContent() {
               {recentAgents.map((agent) => {
                 const act = teamActivity[agent.agentName];
                 const working = !!act?.working;
+                const offline = agent.status !== 'online';
                 return (
-                  <button
+                  <div
                     key={agent.agentName}
+                    role="button"
+                    tabIndex={0}
                     onClick={() => setSelectedAgentName(agent.agentName)}
+                    onKeyDown={(e) => { if (e.key === 'Enter') setSelectedAgentName(agent.agentName); }}
                     className="w-full flex items-start gap-2 px-2 py-1.5 rounded-lg hover:bg-zinc-100 dark:hover:bg-zinc-800 cursor-pointer group transition-colors text-left"
                   >
-                    <AgentAvatar name={agent.agentName} size={20} status={agent.status} showStatus className="mt-px shrink-0" />
+                    <AgentAvatar name={agent.agentName} size={20} status={agent.status} showStatus className={cn('mt-px shrink-0', offline && 'opacity-50')} />
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-1.5">
-                        <span className="text-[13px] font-normal text-foreground group-hover:text-primary truncate">
+                        <span className={cn('text-[13px] font-normal truncate group-hover:text-primary', offline ? 'text-muted-foreground' : 'text-foreground')}>
                           {agent.agentName}
                         </span>
                         {working && <span className="size-1.5 rounded-full bg-blue-500 animate-pulse shrink-0" title="working" />}
                       </div>
-                      {working && act?.label && (
+                      {working && act?.label ? (
                         <div className="text-[10px] text-blue-500/80 font-mono truncate leading-tight">{act.label}</div>
+                      ) : offline ? (
+                        <div className="text-[10px] text-muted-foreground/70 truncate leading-tight">
+                          offline{agent.lastHeartbeatAt ? ` · last seen ${timeAgo(agent.lastHeartbeatAt)}` : ''}
+                        </div>
+                      ) : (
+                        <div className="text-[10px] text-emerald-600/80 dark:text-emerald-500/80 truncate leading-tight">online</div>
                       )}
                     </div>
-                  </button>
+                    <button
+                      onClick={(e) => { e.stopPropagation(); setAssignTo(agent.agentName); }}
+                      className="self-center shrink-0 opacity-0 group-hover:opacity-100 p-1 rounded-md text-muted-foreground hover:text-primary hover:bg-primary/10 transition-opacity"
+                      title={`Assign a task to ${agent.agentName}`}
+                    >
+                      <ClipboardPlus className="size-3.5" />
+                    </button>
+                  </div>
                 );
               })}
               <button
@@ -322,6 +355,7 @@ export function SidebarContent() {
                   <NavButton active={viewMode === 'routines'} icon={<CalendarClock className="size-[15px]" />} label="Routines" count={routines.filter((r) => r.status === 'active').length} onClick={() => setViewMode('routines')} />
                   <NavButton active={viewMode === 'knowledge'} icon={<BookOpen className="size-[15px]" />} label="Knowledge" count={knowledge.length} onClick={() => setViewMode('knowledge')} />
                   <NavButton active={viewMode === 'tasks'} icon={<ListTodo className="size-[15px]" />} label="Tasks" count={todos.filter((t) => t.status === 'pending' || t.status === 'in_progress').length} onClick={() => setViewMode('tasks')} />
+                  <NavButton active={viewMode === 'review'} icon={<ClipboardCheck className="size-[15px]" />} label="Review" alert={reviewsPending} onClick={() => setViewMode('review')} />
                   <NavButton active={viewMode === 'timeline'} icon={<Activity className="size-[15px]" />} label="Timeline" count={workingCount > 0 ? workingCount : undefined} onClick={() => setViewMode('timeline')} />
                   <NavButton active={viewMode === 'inbox'} icon={<Inbox className="size-[15px]" />} label="Inbox" count={unreadNotificationCount > 0 ? unreadNotificationCount : undefined} onClick={() => setViewMode('inbox')} />
                   <NavButton active={viewMode === 'skills'} icon={<Sparkles className="size-[15px]" />} label="Skill Hub" onClick={() => setViewMode('skills')} />
@@ -435,6 +469,22 @@ export function SidebarContent() {
         onCreateThread={({ master, participants, resumeFrom }) => {
           createSession({ master, participants, resumeFrom });
           setViewMode('threads');
+        }}
+      />
+
+      {/* Per-member "Assign task" — delegate straight to the picked agent */}
+      <DelegateDialog
+        open={!!assignTo}
+        onOpenChange={(o) => { if (!o) setAssignTo(null); }}
+        agents={agents}
+        defaultContractor={assignTo || undefined}
+        onDelegate={async (contractor, text, skillId) => {
+          await workspaceApi.createA2ATask({
+            source: `human:${currentUser?.name || currentUser?.id || 'you'}`,
+            contractor, text, skillId,
+          });
+          refreshA2ATasks();
+          setViewMode('tasks');
         }}
       />
     </>

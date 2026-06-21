@@ -2,7 +2,7 @@
 
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
-import { Copy, Check, User, FileIcon, Download, Eye } from 'lucide-react';
+import { Copy, Check, User, FileIcon, Download, Eye, WifiOff } from 'lucide-react';
 import { toast } from 'sonner';
 import { memo, useCallback, useMemo, useState } from 'react';
 import { MESSAGE_TYPE, type WorkspaceMessage, type WorkspaceAgent, type A2ATask } from '@/lib/types';
@@ -168,6 +168,22 @@ function Attachments({ items }: { items: Attachment[] }) {
   );
 }
 
+/** When a message addressed agents that were offline, the router records them
+ *  in `offline_skipped` so we can explain the silence instead of leaving the
+ *  human wondering why no one replied. */
+function OfflineSkippedNote({ names }: { names: string[] }) {
+  if (!names.length) return null;
+  const label = names.length === 1
+    ? `${names[0]} is offline — didn't reply`
+    : `${names.join(', ')} are offline — didn't reply`;
+  return (
+    <div className="mt-1 inline-flex items-center gap-1 text-[11px] text-amber-600 dark:text-amber-500">
+      <WifiOff className="size-3 shrink-0" />
+      <span>{label}</span>
+    </div>
+  );
+}
+
 interface ChatMessageProps {
   message: WorkspaceMessage;
   agents?: WorkspaceAgent[];
@@ -269,6 +285,7 @@ export const ChatMessage = memo(function ChatMessage({ message, agents = [] }: C
             <div className="text-sm leading-relaxed mt-0.5">
               <MarkdownContent content={message.content} agentNames={agentNames} />
               <Attachments items={attachments} />
+              <OfflineSkippedNote names={(message.metadata?.offline_skipped as string[]) || []} />
             </div>
           </div>
         </div>

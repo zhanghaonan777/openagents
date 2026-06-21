@@ -250,6 +250,28 @@ export interface A2AArtifact {
 }
 
 /** A delegation, served by the backend A2A gateway (/v1/a2a/tasks). */
+export type TaskReviewState = 'pending' | 'approved' | 'changes_requested';
+
+/** Peer-review overlay on a delegation — decoupled from the A2A protocol state
+ *  (the backend keeps it in task_metadata.review). */
+export interface TaskReview {
+  state: TaskReviewState;
+  reviewer?: string | null;
+  comment?: string | null;
+  requestedAt?: string | null;
+  decidedAt?: string | null;
+  requestedBy?: string | null;
+  decidedBy?: string | null;
+}
+
+export interface TaskComment {
+  id: string;
+  author: string;
+  text: string;
+  createdAt: string | null;
+  replyTo?: string | null;   // id of the comment this replies to
+}
+
 export interface A2ATask {
   id: string;
   contextId: string | null;
@@ -260,8 +282,13 @@ export interface A2ATask {
   contractorName: string;   // bare contractor name
   skillId: string | null;
   channel: string | null;
+  review?: TaskReview | null;
+  comments?: TaskComment[];
+  blockedBy?: string[];     // task ids this task waits on
+  blocks?: string[];        // task ids waiting on this one
+  clarification?: { state: string; question: string; askedAt?: string | null; askedBy?: string | null } | null;
   artifacts: A2AArtifact[];
-  history: { role: string; parts: { text?: string }[] }[];
+  history: { role: string; parts: { text?: string }[]; timestamp?: string | null }[];
   createdAt: string | null;
   updatedAt: string | null;
   completedAt: string | null;

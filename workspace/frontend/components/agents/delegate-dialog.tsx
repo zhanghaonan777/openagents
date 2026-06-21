@@ -16,11 +16,13 @@ export function DelegateDialog({
   onOpenChange,
   agents,
   onDelegate,
+  defaultContractor,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   agents: WorkspaceAgent[];
   onDelegate: (contractor: string, text: string, skillId?: string) => Promise<void>;
+  defaultContractor?: string;
 }) {
   const [contractor, setContractor] = useState('');
   const [text, setText] = useState('');
@@ -28,13 +30,17 @@ export function DelegateDialog({
   const [skillsByAgent, setSkillsByAgent] = useState<Record<string, A2AAgentSkill[]>>({});
   const [busy, setBusy] = useState(false);
 
-  // Default / re-validate the contractor when opening: if the current pick is
-  // empty or no longer a member, fall back to the first agent.
+  // On open, preselect the requested contractor (per-member "Assign task"), else
+  // re-validate the current pick and fall back to the first agent.
   useEffect(() => {
-    if (open && agents.length > 0 && !agents.some((a) => a.agentName === contractor)) {
+    if (!open) return;
+    if (defaultContractor && agents.some((a) => a.agentName === defaultContractor)) {
+      setContractor(defaultContractor);
+    } else if (agents.length > 0 && !agents.some((a) => a.agentName === contractor)) {
       setContractor(agents[0].agentName);
     }
-  }, [open, agents, contractor]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, defaultContractor]);
 
   // Reset the draft when the dialog closes so a cancelled task doesn't leak
   // its text into the next delegation.

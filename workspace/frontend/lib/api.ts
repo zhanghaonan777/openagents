@@ -952,6 +952,81 @@ class WorkspaceApi {
     });
   }
 
+  async getA2ABriefing(agent: string): Promise<{
+    agent: string;
+    items: { taskId: string; kind: 'review' | 'work'; priority: string; reason: string; state: string; contractorName: string; request: string | null }[];
+    counts: { review: number; work: number };
+  }> {
+    const params = new URLSearchParams({ network: this.workspaceId || '', agent });
+    return this.request(`/v1/a2a/briefing?${params}`);
+  }
+
+  async reassignA2ATask(taskId: string, p: { contractor: string }): Promise<import('./types').A2ATask> {
+    return this.request(`/v1/a2a/tasks/${taskId}/reassign`, {
+      method: 'POST',
+      body: JSON.stringify({ network: this.workspaceId, contractor: p.contractor }),
+    });
+  }
+
+  async nudgeA2ATask(taskId: string, p?: { text?: string }): Promise<import('./types').A2ATask> {
+    return this.request(`/v1/a2a/tasks/${taskId}/nudge`, {
+      method: 'POST',
+      body: JSON.stringify({ network: this.workspaceId, text: p?.text }),
+    });
+  }
+
+  async setA2AClarification(taskId: string, p: { action: 'set' | 'resolve'; question?: string; answer?: string }): Promise<import('./types').A2ATask> {
+    return this.request(`/v1/a2a/tasks/${taskId}/clarification`, {
+      method: 'POST',
+      body: JSON.stringify({ network: this.workspaceId, action: p.action, question: p.question, answer: p.answer }),
+    });
+  }
+
+  async editA2ADependency(taskId: string, p: { blockedBy: string; action?: 'add' | 'remove' }): Promise<import('./types').A2ATask> {
+    return this.request(`/v1/a2a/tasks/${taskId}/dependencies`, {
+      method: 'POST',
+      body: JSON.stringify({ network: this.workspaceId, blocked_by: p.blockedBy, action: p.action || 'add' }),
+    });
+  }
+
+  async addA2AComment(taskId: string, p: { author: string; text: string; replyTo?: string }): Promise<import('./types').A2ATask> {
+    return this.request(`/v1/a2a/tasks/${taskId}/comments`, {
+      method: 'POST',
+      body: JSON.stringify({ network: this.workspaceId, author: p.author, text: p.text, reply_to: p.replyTo }),
+    });
+  }
+
+  // ── Review loop (peer review of a delegated deliverable) ──
+  async requestA2AReview(
+    taskId: string,
+    p?: { reviewer?: string; actor?: string },
+  ): Promise<import('./types').A2ATask> {
+    return this.request(`/v1/a2a/tasks/${taskId}/review/request`, {
+      method: 'POST',
+      body: JSON.stringify({ network: this.workspaceId, reviewer: p?.reviewer, actor: p?.actor }),
+    });
+  }
+
+  async approveA2AReview(
+    taskId: string,
+    p?: { reviewer?: string; comment?: string },
+  ): Promise<import('./types').A2ATask> {
+    return this.request(`/v1/a2a/tasks/${taskId}/review/approve`, {
+      method: 'POST',
+      body: JSON.stringify({ network: this.workspaceId, reviewer: p?.reviewer, comment: p?.comment }),
+    });
+  }
+
+  async requestA2AReviewChanges(
+    taskId: string,
+    p?: { reviewer?: string; comment?: string },
+  ): Promise<import('./types').A2ATask> {
+    return this.request(`/v1/a2a/tasks/${taskId}/review/request-changes`, {
+      method: 'POST',
+      body: JSON.stringify({ network: this.workspaceId, reviewer: p?.reviewer, comment: p?.comment }),
+    });
+  }
+
   async setA2AAgentSkills(
     agentName: string,
     skills: import('./types').A2AAgentSkill[],

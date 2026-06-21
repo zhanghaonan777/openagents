@@ -14,6 +14,7 @@ import { AgentProfilePanel } from '@/components/agents/agent-profile-panel';
 import { MonitorGrid } from '@/components/monitor/monitor-grid';
 import { TasksView } from '@/components/tasks/tasks-view';
 import { TimelineView } from '@/components/timeline/timeline-view';
+import { ReviewView } from '@/components/review/review-view';
 import { RoutineList } from '@/components/routines/routine-list';
 import { SkillsView } from '@/components/skills/skills-view';
 import { InboxView } from '@/components/inbox/inbox-view';
@@ -127,6 +128,10 @@ export function Wrapper() {
             <div className="h-full mx-2 my-1.5 bg-background overflow-hidden border border-input rounded-xl shadow-xs">
               <TimelineView />
             </div>
+          ) : viewMode === 'review' ? (
+            <div className="h-full mx-2 my-1.5 bg-background overflow-hidden border border-input rounded-xl shadow-xs">
+              <ReviewView />
+            </div>
           ) : viewMode === 'inbox' ? (
             <div className="h-full mx-2 my-1.5 bg-background overflow-hidden border border-input rounded-xl shadow-xs">
               <InboxView />
@@ -200,7 +205,7 @@ export function Wrapper() {
             <>
               {/* Middle pane — thread list or file list
                   Hidden for: connect view, expanded detail, or when browser preview is active */}
-              {viewMode !== 'connect' && viewMode !== 'tasks' && viewMode !== 'timeline' && viewMode !== 'inbox' && viewMode !== 'knowledge' && viewMode !== 'skills' && !isDetailExpanded && !(splitBrowser && showBrowserPreview && viewMode === 'threads') && (
+              {viewMode !== 'connect' && viewMode !== 'tasks' && viewMode !== 'timeline' && viewMode !== 'review' && viewMode !== 'inbox' && viewMode !== 'knowledge' && viewMode !== 'skills' && !isDetailExpanded && !(splitBrowser && showBrowserPreview && viewMode === 'threads') && (
                 <div className="shrink-0 w-[300px] xl:w-[400px] bg-background overflow-hidden border border-input rounded-xl shadow-xs flex flex-col">
                   {viewMode === 'threads' && <ThreadList />}
                   {viewMode === 'files' && <FileList />}
@@ -235,6 +240,7 @@ export function Wrapper() {
                   {viewMode === 'connect' && <ConnectAgentView />}
                   {viewMode === 'tasks' && <TasksView />}
                   {viewMode === 'timeline' && <TimelineView />}
+                  {viewMode === 'review' && <ReviewView />}
                   {viewMode === 'inbox' && <InboxView />}
                   {viewMode === 'skills' && <SkillsView />}
                   {viewMode === 'knowledge' && <KnowledgeView />}
