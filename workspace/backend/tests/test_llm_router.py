@@ -479,3 +479,65 @@ def test_liveness_effective_status_unit():
     assert effective_status(no_hb, now) == "online"   # legacy/just-joined: trust status
     assert effective_status(cloud, now) == "online"   # cloud agents don't heartbeat
     assert live_agent_names([fresh, stale, no_hb, cloud], now) == {"a", "c", "d"}
+
+
+# ---------------------------------------------------------------------------
+# Inclusive round-robin pass (AG2 `round_robin` analogue) — ensure everyone
+# in a discussion gets a turn before the thread rests.
+# ---------------------------------------------------------------------------
+from app.mods.workspace_mod import _inclusive_next_speaker, _has_discussion_cue
+from app.models import EventRecord
+
+
+def _disc_channel(db, names):
+    ws = Workspace(name="Disc WS", slug="disc-ws", password_hash="t")
+    db.add(ws); db.flush()
+    for n in names:
+        db.add(WorkspaceMember(workspace_id=ws.id, agent_name=n, role="member", status="online"))
+    ch = Channel(workspace_id=ws.id, name="disc", status="active")
+    db.add(ch); db.flush()
+    for n in names:
+        db.add(ChannelMember(channel_id=ch.id, agent_name=n))
+    db.flush(); db.refresh(ch)
+    return ws, ch
+
+
+def _ev(db, ws, source, content, ts, mtype="chat"):
+    db.add(EventRecord(id=f"ev{ts}", network_id=ws.id, type="workspace.message.posted",
+                       source=source, target="channel/disc",
+                       payload={"content": content, "message_type": mtype},
+                       metadata_={}, timestamp=ts, visibility="channel"))
+    db.flush()
+
+
+def test_discussion_cue_detection():
+    assert _has_discussion_cue("大家讨论一下要不要上 2FA，各自说说")
+    assert _has_discussion_cue("let's discuss this, everyone weigh in")
+    assert not _has_discussion_cue("@alice 帮我修一下这个 bug")
+
+
+def test_inclusive_routes_to_unspoken(db):
+    ws, ch = _disc_channel(db, ["pm", "fe", "be"])
+    _ev(db, ws, "human:u", "大家讨论一下要不要上2FA，各自说说看法", 100)
+    _ev(db, ws, "openagents:pm", "PM 视角……", 200)
+    _ev(db, ws, "openagents:fe", "前端视角……", 300)
+    new_event = _make_event("openagents:fe", "channel/disc", "前端视角……")
+    assert _inclusive_next_speaker(ch, new_event, db, ws, {"pm", "fe", "be"}) == ["be"]
+
+
+def test_inclusive_stops_when_all_spoke(db):
+    ws, ch = _disc_channel(db, ["pm", "fe", "be"])
+    _ev(db, ws, "human:u", "大家各自说说", 100)
+    _ev(db, ws, "openagents:pm", "...", 200)
+    _ev(db, ws, "openagents:be", "...", 300)
+    new_event = _make_event("openagents:fe", "channel/disc", "...")  # fe just spoke
+    # pm + be spoke (history) + fe (just now) → everyone done → stop
+    assert _inclusive_next_speaker(ch, new_event, db, ws, {"pm", "fe", "be"}) == []
+
+
+def test_inclusive_no_cue_does_not_force(db):
+    ws, ch = _disc_channel(db, ["pm", "fe", "be"])
+    _ev(db, ws, "human:u", "@pm 登录页什么时候能好？", 100)   # no discussion cue
+    _ev(db, ws, "openagents:pm", "下周。", 200)
+    new_event = _make_event("openagents:pm", "channel/disc", "下周。")
+    assert _inclusive_next_speaker(ch, new_event, db, ws, {"pm", "fe", "be"}) == []

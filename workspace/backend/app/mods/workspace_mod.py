@@ -527,6 +527,69 @@ def _fallback_targets(event, channel, mentions: List[str], live: Optional[set] =
     return [participants[0]] if participants else []
 
 
+# Discussion cues — when a human invites the whole room to weigh in, switch the
+# next-speaker router from "pick the one most-relevant, then stop" to an
+# inclusive round-robin so every live participant speaks once before the thread
+# rests. Borrowed from AG2/AutoGen GroupChat's `round_robin` speaker-selection
+# method (autogen/agentchat/groupchat.py), adapted to our event-driven router.
+_DISCUSSION_CUES = re.compile(
+    r"大家|讨论|各自|都说说|你们怎么看|轮流|每个人|各位|逐一|挨个|"
+    r"discuss|everyone|weigh in|your thoughts|round.?robin|each of you|go around",
+    re.IGNORECASE,
+)
+
+
+def _has_discussion_cue(text: str) -> bool:
+    return bool(_DISCUSSION_CUES.search(text or ""))
+
+
+def _inclusive_next_speaker(channel, new_event, db, workspace, live) -> List[str]:
+    """Round-robin pass for group discussions (AG2 `round_robin` analogue).
+
+    If the human message that opened this round invited the whole room, route to
+    the next *live* participant who hasn't spoken yet this round — so everyone
+    weighs in once before the thread rests. Returns one name, or [] once
+    everyone has spoken (so the conversation terminates — bounded to one round,
+    no infinite loop).
+    """
+    from app.models import EventRecord
+
+    rows = db.execute(
+        select(EventRecord)
+        .where(
+            EventRecord.network_id == workspace.id,
+            EventRecord.target == f"channel/{channel.name}",
+            EventRecord.type == "workspace.message.posted",
+        )
+        .order_by(EventRecord.timestamp.desc())
+        .limit(40)
+    ).scalars().all()
+
+    spoken: set = set()
+    cue = False
+    # Walk newest → oldest until the human message that opened this round.
+    for e in rows:
+        if e.source.startswith("human:"):
+            cue = _has_discussion_cue((e.payload or {}).get("content", ""))
+            break
+        if e.source.startswith("openagents:") and (e.payload or {}).get("message_type", "chat") == "chat":
+            spoken.add(e.source[len("openagents:"):])
+
+    if not cue:
+        return []
+
+    # The agent that just spoke isn't persisted yet — exclude it explicitly.
+    if new_event.source.startswith("openagents:"):
+        spoken.add(new_event.source[len("openagents:"):])
+
+    order = [
+        p.agent_name for p in (channel.participants or [])
+        if p.agent_name != "__no_response__" and p.agent_name in live
+    ]
+    unspoken = [n for n in order if n not in spoken]
+    return [unspoken[0]] if unspoken else []
+
+
 _ROUTER_PROMPT = """\
 You are a conversation router for a multi-agent workspace. Decide which \
 agent should respond next to the LATEST message. Use judgment — read the \
@@ -1013,6 +1076,14 @@ async def _handle_message_posted(event: Event, ctx: PipelineContext) -> Optional
         from app.config import config
         if config.ROUTER_LLM_ENABLED and _get_router_api_key():
             targets = await _route_with_llm(channel, event, db, workspace, live=live)
+            # AG2 round_robin-style inclusive pass: the auto router is biased to
+            # "stop" (to avoid loops), so in a group of 3+ it tends to conclude
+            # before everyone has weighed in. If the human opened a discussion
+            # and the router stopped while live participants are still silent,
+            # route to the next unspoken one. Bounded: returns [] once all have
+            # spoken, so the thread still terminates.
+            if not targets and len(live_participants) >= 3:
+                targets = _inclusive_next_speaker(channel, event, db, workspace, live)
         else:
             # LLM router not available — fallback to mention or master
             targets = _fallback_targets(event, channel, mentions, live=live)
