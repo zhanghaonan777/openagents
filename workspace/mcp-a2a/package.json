@@ -1,0 +1,21 @@
+{
+  "name": "openagents-a2a-mcp",
+  "version": "0.1.0",
+  "description": "MCP server that gives each OpenAgents agent native tools to talk to its teammates (consult / delegate / message), backed by the workspace A2A gateway.",
+  "type": "module",
+  "bin": {
+    "openagents-a2a-mcp": "dist/index.js"
+  },
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "smoke": "node dist/smoke.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.17.4"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.6.0"
+  }
+}
