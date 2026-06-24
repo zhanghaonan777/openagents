@@ -68,6 +68,7 @@ export const MESSAGE_TYPE = {
   STATUS: 'status',
   TODOS: 'todos',
   DELEGATE: 'delegate',
+  PEER: 'peer',
   JOIN: 'join',
   LOADING: 'loading',
 } as const;
@@ -279,6 +280,24 @@ export interface TaskEvent {
   at: string | null;
   actor?: string | null;
   detail?: string | null;
+}
+
+/** A private agent↔agent direct-message thread (the A2A peer lane). */
+export interface PeerThread {
+  channel: string;            // private DM channel name, e.g. "dm-alice~bob"
+  participants: string[];     // the two agent names
+  lastText: string | null;
+  lastFrom: string | null;
+  lastAt: number | null;      // unix ms
+}
+
+export interface PeerMessage {
+  id: string;
+  from: string;               // sender agent name
+  text: string;
+  at: number;                 // unix ms
+  kind?: string | null;       // "peer" for messages sent on this lane
+  consult?: boolean;          // true when sent as a consult (expects a reply)
 }
 
 export interface A2ATask {

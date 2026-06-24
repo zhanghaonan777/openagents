@@ -6,6 +6,7 @@ import { Copy, Check, User, FileIcon, Download, Eye, WifiOff } from 'lucide-reac
 import { toast } from 'sonner';
 import { memo, useCallback, useMemo, useState } from 'react';
 import { MESSAGE_TYPE, type WorkspaceMessage, type WorkspaceAgent, type A2ATask } from '@/lib/types';
+import { messageKind, MessageKindBadge, KIND_META } from './message-kind';
 import { AgentAvatar } from '@/components/agents/agent-avatar';
 import { MarkdownContent } from './markdown-content';
 import { workspaceApi } from '@/lib/api';
@@ -196,6 +197,7 @@ export const ChatMessage = memo(function ChatMessage({ message, agents = [] }: C
   const isSystem = message.messageType === MESSAGE_TYPE.STATUS;
   const isJoin = message.messageType === MESSAGE_TYPE.JOIN;
   const isDelegate = message.messageType === MESSAGE_TYPE.DELEGATE;
+  const kind = messageKind(message);
   const [copied, setCopied] = useState(false);
 
   // A delegate kick-off embeds an internal "[A2A delegation · task …]" instruction
@@ -313,16 +315,15 @@ export const ChatMessage = memo(function ChatMessage({ message, agents = [] }: C
                 {agent.role}
               </span>
             )}
-            {isDelegate && (
-              <span className="text-[9.5px] font-bold text-indigo-500 bg-indigo-500/[0.13] px-1.5 py-0.5 rounded-full tracking-wide shrink-0">
-                delegate
-              </span>
-            )}
+            {kind && <MessageKindBadge kind={kind} />}
             {timestamp && (
               <span className="text-xs text-muted-foreground">{timestamp}</span>
             )}
           </div>
-          <div className="text-sm leading-relaxed mt-0.5">
+          <div
+            className={cn('text-sm leading-relaxed mt-0.5', kind && 'border-l-2 pl-2.5')}
+            style={kind ? { borderColor: KIND_META[kind].dot } : undefined}
+          >
             <MarkdownContent content={displayContent} agentNames={agentNames} />
             <Attachments items={attachments} />
 

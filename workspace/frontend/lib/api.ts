@@ -945,6 +945,25 @@ class WorkspaceApi {
     });
   }
 
+  // ── Agent ↔ agent direct messaging (peer lane) ──
+  /** Send a direct message from one agent to another (consult when expectsReply). */
+  async sendA2APeerMessage(p: { source: string; to: string; text: string; expectsReply?: boolean }): Promise<{ channel: string; from: string; to: string; text: string; expectsReply: boolean }> {
+    return this.request(`/v1/a2a/messages`, {
+      method: 'POST',
+      body: JSON.stringify({ network: this.workspaceId, source: p.source, to: p.to, text: p.text, expects_reply: p.expectsReply }),
+    });
+  }
+
+  async listA2APeerThreads(): Promise<{ threads: import('./types').PeerThread[] }> {
+    const params = new URLSearchParams({ network: this.workspaceId });
+    return this.request(`/v1/a2a/messages?${params}`);
+  }
+
+  async getA2APeerThread(channel: string): Promise<{ channel: string; messages: import('./types').PeerMessage[] }> {
+    const params = new URLSearchParams({ network: this.workspaceId, channel });
+    return this.request(`/v1/a2a/messages?${params}`);
+  }
+
   async createA2ATask(p: {
     source: string; contractor: string; text: string; contextId?: string; skillId?: string;
   }): Promise<import('./types').A2ATask> {

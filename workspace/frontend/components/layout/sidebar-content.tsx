@@ -352,7 +352,7 @@ export function SidebarContent() {
               Collaboration
             </p>
             <div className="space-y-0.5">
-              <NavButton active={viewMode === 'threads'} icon={<MessageSquare className="size-[15px]" />} label="Threads" count={sessions.filter((s) => !s.sessionId.startsWith('routine:')).length} onClick={() => setViewMode('threads')} />
+              <NavButton active={viewMode === 'threads'} icon={<MessageSquare className="size-[15px]" />} label="Threads" count={sessions.filter((s) => !s.sessionId.startsWith('routine:') && !s.sessionId.startsWith('dm-')).length} onClick={() => setViewMode('threads')} />
               {recentAgents.length > 0 && (
                 <>
                   <NavButton active={viewMode === 'files'} icon={<FileText className="size-[15px]" />} label="Files" count={files.length} onClick={() => setViewMode('files')} />
