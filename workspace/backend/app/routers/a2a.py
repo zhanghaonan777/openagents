@@ -1734,7 +1734,9 @@ def consult_teammate(
     to_addr = _agent_address(to_name)
     ws_id = str(workspace.id)
     channel_target = f"channel/{channel}"
-    deadline = time.time() + min(max(body.wait, 1), MAX_WAIT_SECONDS)
+    started = time.time()
+    deadline = started + min(max(body.wait, 1), MAX_WAIT_SECONDS)
+    logger.info("a2a consult: %s → %s asking (channel=%s, wait=%ss)", from_name, to_name, channel, body.wait)
     while time.time() < deadline:
         db.close()                # release the pooled connection while we wait
         time.sleep(3)
@@ -1754,8 +1756,11 @@ def consult_teammate(
             continue
         text = _strip_leading_mention((reply.payload or {}).get("content") or "")
         if text:
+            logger.info("a2a consult: %s → %s ANSWERED in %.0fs (%d chars)",
+                        from_name, to_name, time.time() - started, len(text))
             return success_response({"answered": True, "from": to_name, "answer": text, "channel": channel})
 
+    logger.info("a2a consult: %s → %s TIMED OUT after %ss (no reply)", from_name, to_name, body.wait)
     return success_response({
         "answered": False, "from": to_name, "answer": None, "channel": channel,
         "note": f"{to_name} did not reply within {body.wait}s (may be offline or busy).",
