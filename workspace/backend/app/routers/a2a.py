@@ -36,7 +36,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy.orm.exc import StaleDataError
 
 from app.database import get_db
-from app.models import TaskRecord, TodoRecord, WorkspaceMember
+from app.models import Channel, ChannelMember, EventRecord, TaskRecord, TodoRecord, WorkspaceMember
 from app.response import ResponseCode, json_response, success_response
 from app.routers.network import (
     _emit_event_blocking,
@@ -661,13 +661,20 @@ def create_task(
     if not _is_member(db, str(workspace.id), contractor_name):
         return json_response(ResponseCode.BAD_REQUEST, f"Unknown contractor '{contractor_name}'")
 
+    # Agent→agent task with no channel (e.g. a `consult`/`delegate` MCP tool call):
+    # route the kick-off through the pair's private DM channel so the contractor is
+    # actually triggered. Explicit context_id and human delegators are unchanged.
+    context_id = body.context_id
+    if not context_id and body.source.startswith("openagents:"):
+        context_id = _ensure_dm_channel(db, workspace, _agent_name(body.source), contractor_name)
+
     task = _build_and_kickoff_task(
         db, workspace,
         source=body.source,
         contractor_addr=contractor_addr,
         text=body.text,
         skill_id=body.skill_id,
-        context_id=body.context_id,
+        context_id=context_id,
         token=x_workspace_token,
     )
 
@@ -1473,3 +1480,181 @@ def restore_task(
         _append_event(task, "restored", actor=body.actor)
         task.updated_at = _now()
     return _commit_review(db, task)
+
+
+# ---------------------------------------------------------------------------
+# Agent ↔ agent direct messaging (peer lane — a private 2-party conversation)
+# ---------------------------------------------------------------------------
+# Direct agent-to-agent communication, distinct from task delegation: no board
+# lifecycle, just a back-and-forth. It rides on a private 2-member channel so
+# today's polling agents are triggered through the normal @mention routing (the
+# member event-poll only delivers channel events, not arbitrary directed ones) —
+# no launcher change. One lane serves both fire-and-forget DMs and "consult"
+# (expects_reply: ask a peer and get an answer back).
+
+def _strip_leading_mention(content: str) -> str:
+    """Drop a leading @name token so the DM thread reads as plain conversation."""
+    c = (content or "").strip()
+    if c.startswith("@"):
+        parts = c.split(None, 1)
+        return parts[1].strip() if len(parts) > 1 else ""
+    return c
+
+
+def _dm_channel_name(a_name: str, b_name: str) -> str:
+    """Stable, order-independent private-channel name for an agent pair."""
+    return "dm-" + "~".join(sorted([a_name, b_name]))
+
+
+def _ensure_dm_channel(db: Session, workspace, a_name: str, b_name: str) -> str:
+    """Get-or-create the pair's private DM channel and ensure both are members."""
+    name = _dm_channel_name(a_name, b_name)
+    ch = db.execute(
+        select(Channel).where(Channel.workspace_id == str(workspace.id), Channel.name == name)
+    ).scalar_one_or_none()
+    if ch is None:
+        ch = Channel(
+            workspace_id=str(workspace.id),
+            name=name,
+            title=f"{a_name} ↔ {b_name}",
+            created_by="system",
+            status="active",
+        )
+        db.add(ch)
+        db.flush()
+    have = set(db.execute(
+        select(ChannelMember.agent_name).where(ChannelMember.channel_id == ch.id)
+    ).scalars().all())
+    for nm in (a_name, b_name):
+        if nm not in have:
+            db.add(ChannelMember(channel_id=ch.id, agent_name=nm))
+    db.flush()
+    return name
+
+
+class PeerMessageRequest(BaseModel):
+    network: str
+    source: str                   # sender agent (name or address)
+    to: str                       # recipient agent (name or address)
+    text: str
+    expects_reply: bool = False   # consult flavor — ask a peer and get an answer back
+
+
+@router.post("/messages")
+def send_peer_message(
+    body: PeerMessageRequest,
+    db: Session = Depends(get_db),
+    x_workspace_token: Optional[str] = Header(None),
+    authorization: Optional[str] = Header(None),
+):
+    """Send a direct agent→agent message. Lands in the pair's private DM channel,
+    triggering the recipient via the normal @mention routing. `expects_reply`
+    marks a consult (ask and wait for an answer in the same thread)."""
+    workspace = _resolve_workspace(db, body.network)
+    if not workspace:
+        return json_response(ResponseCode.NOT_FOUND, "Network not found")
+    if not _verify_workspace_access(workspace, x_workspace_token, authorization):
+        return json_response(ResponseCode.UNAUTHORIZED, "Invalid credentials")
+
+    text = (body.text or "").strip()
+    if not text:
+        return json_response(ResponseCode.BAD_REQUEST, "Empty message")
+
+    from_name = _agent_name(body.source)
+    to_name = _agent_name(body.to)
+    if from_name == to_name:
+        return json_response(ResponseCode.BAD_REQUEST, "An agent cannot message itself")
+    if not _is_member(db, str(workspace.id), from_name):
+        return json_response(ResponseCode.BAD_REQUEST, f"Unknown sender '{from_name}'")
+    if not _is_member(db, str(workspace.id), to_name):
+        return json_response(ResponseCode.BAD_REQUEST, f"Unknown recipient '{to_name}'")
+
+    channel = _ensure_dm_channel(db, workspace, from_name, to_name)
+
+    content = f"@{to_name} {text}"
+    if body.expects_reply:
+        content += "  · please reply here when done."
+    try:
+        event = Event(
+            type="workspace.message.posted",
+            source=_agent_address(from_name),
+            target=f"channel/{channel}",
+            payload={"content": content, "message_type": "peer"},
+            metadata={"peer": {"from": from_name, "to": to_name, "expectsReply": body.expects_reply}},
+        )
+        _emit_event_blocking(event, workspace, db, token=x_workspace_token)
+    except Exception:
+        logger.exception("a2a: peer message delivery failed (%s → %s)", from_name, to_name)
+        return json_response(ResponseCode.BAD_REQUEST, "Failed to deliver message")
+    db.commit()
+
+    return success_response({
+        "channel": channel,
+        "from": from_name,
+        "to": to_name,
+        "text": text,
+        "expectsReply": body.expects_reply,
+    })
+
+
+@router.get("/messages")
+def list_peer_messages(
+    network: str = Query(...),
+    channel: Optional[str] = Query(None),   # a specific dm- channel → return its thread
+    db: Session = Depends(get_db),
+    x_workspace_token: Optional[str] = Header(None),
+    authorization: Optional[str] = Header(None),
+):
+    """List agent↔agent DM threads, or one thread's messages (with `channel`)."""
+    workspace = _resolve_workspace(db, network)
+    if not workspace:
+        return json_response(ResponseCode.NOT_FOUND, "Network not found")
+    if not _verify_workspace_access(workspace, x_workspace_token, authorization):
+        return json_response(ResponseCode.UNAUTHORIZED, "Invalid credentials")
+
+    if channel:
+        rows = db.execute(
+            select(EventRecord).where(
+                EventRecord.network_id == workspace.id,
+                EventRecord.target == f"channel/{channel}",
+                EventRecord.type == "workspace.message.posted",
+            ).order_by(EventRecord.timestamp.asc())
+        ).scalars().all()
+        messages = [{
+            "id": e.id,
+            "from": _agent_name(e.source),
+            "text": _strip_leading_mention((e.payload or {}).get("content") or ""),
+            "at": e.timestamp,
+            "kind": (e.payload or {}).get("message_type"),
+            "consult": bool(((e.metadata_ or {}).get("peer") or {}).get("expectsReply")),
+        } for e in rows]
+        return success_response({"channel": channel, "messages": messages})
+
+    chans = db.execute(
+        select(Channel).where(
+            Channel.workspace_id == str(workspace.id),
+            Channel.name.startswith("dm-"),
+            Channel.status == "active",
+        )
+    ).scalars().all()
+    threads = []
+    for ch in chans:
+        members = db.execute(
+            select(ChannelMember.agent_name).where(ChannelMember.channel_id == ch.id)
+        ).scalars().all()
+        last = db.execute(
+            select(EventRecord).where(
+                EventRecord.network_id == workspace.id,
+                EventRecord.target == f"channel/{ch.name}",
+                EventRecord.type == "workspace.message.posted",
+            ).order_by(EventRecord.timestamp.desc()).limit(1)
+        ).scalar_one_or_none()
+        threads.append({
+            "channel": ch.name,
+            "participants": sorted(members),
+            "lastText": _strip_leading_mention((last.payload or {}).get("content") or "") if last else None,
+            "lastFrom": _agent_name(last.source) if last else None,
+            "lastAt": last.timestamp if last else None,
+        })
+    threads.sort(key=lambda t: t["lastAt"] or 0, reverse=True)
+    return success_response({"threads": threads})

@@ -808,3 +808,155 @@ def test_timeline_records_overlay_actions(client, workspace):
     types = [e["type"] for e in events]
     assert "commented" in types
     assert "review_requested" in types
+
+
+# ---------------------------------------------------------------------------
+# Agent ↔ agent direct messaging (peer lane)
+# ---------------------------------------------------------------------------
+
+def _peer(client, ws, frm, to, text="can you take a look?", expects_reply=False):
+    return client.post("/v1/a2a/messages", json={
+        "network": ws["id"], "source": frm, "to": to, "text": text, "expects_reply": expects_reply,
+    }, headers=_hdr(ws))
+
+
+def test_peer_message_creates_dm_thread(client, workspace):
+    _join(client, workspace, "alice")
+    _join(client, workspace, "bob")
+    r = _peer(client, workspace, "alice", "bob")
+    assert r.status_code == 200, r.text
+    d = r.json()["data"]
+    assert d["from"] == "alice" and d["to"] == "bob"
+    assert d["channel"] == "dm-alice~bob"          # order-independent name
+    # the thread shows up in the DM list with both participants
+    threads = client.get("/v1/a2a/messages", params={"network": workspace["id"]}, headers=_hdr(workspace)).json()["data"]["threads"]
+    t = next(t for t in threads if t["channel"] == "dm-alice~bob")
+    assert t["participants"] == ["alice", "bob"]
+    assert t["lastFrom"] == "alice"
+
+
+def test_peer_message_name_is_order_independent(client, workspace):
+    _join(client, workspace, "alice")
+    _join(client, workspace, "bob")
+    a = _peer(client, workspace, "alice", "bob").json()["data"]["channel"]
+    b = _peer(client, workspace, "bob", "alice").json()["data"]["channel"]
+    assert a == b == "dm-alice~bob"   # same private thread both directions
+
+
+def test_peer_thread_messages_in_order(client, workspace):
+    _join(client, workspace, "alice")
+    _join(client, workspace, "bob")
+    _peer(client, workspace, "alice", "bob", text="first")
+    _peer(client, workspace, "bob", "alice", text="second")
+    msgs = client.get("/v1/a2a/messages", params={"network": workspace["id"], "channel": "dm-alice~bob"}, headers=_hdr(workspace)).json()["data"]["messages"]
+    texts = [(m["from"], m["text"]) for m in msgs]
+    assert ("alice", "first") in texts and ("bob", "second") in texts
+    # leading @mention is stripped from the display text
+    assert all(not m["text"].startswith("@") for m in msgs)
+
+
+def test_peer_message_self_rejected(client, workspace):
+    _join(client, workspace, "alice")
+    r = _peer(client, workspace, "alice", "alice")
+    assert r.status_code == 400
+
+
+def test_peer_message_unknown_recipient_rejected(client, workspace):
+    _join(client, workspace, "alice")
+    r = _peer(client, workspace, "alice", "ghost")
+    assert r.status_code == 400
+
+
+def test_peer_consult_flag_carried(client, workspace):
+    _join(client, workspace, "alice")
+    _join(client, workspace, "bob")
+    r = _peer(client, workspace, "alice", "bob", text="what DB did we pick?", expects_reply=True)
+    assert r.json()["data"]["expectsReply"] is True
+
+
+def test_agent_to_agent_task_without_channel_uses_dm_channel(client, workspace):
+    """A consult/delegate from one agent to another with no channel routes the
+    kick-off through their private DM channel (so the contractor is triggered)."""
+    _join(client, workspace, "alice")
+    _join(client, workspace, "bob")
+    r = client.post("/v1/a2a/tasks", json={
+        "network": workspace["id"], "source": "openagents:alice",
+        "contractor": "bob", "text": "what's our DB choice?",
+    }, headers=_hdr(workspace))
+    assert r.status_code == 200, r.text
+    assert r.json()["data"]["channel"] == "dm-alice~bob"
+
+
+def test_human_task_without_channel_stays_channelless(client, workspace):
+    """A human delegator with no channel is unchanged (no DM channel invented)."""
+    _join(client, workspace, "bob")
+    r = client.post("/v1/a2a/tasks", json={
+        "network": workspace["id"], "source": "human:you", "contractor": "bob", "text": "do x",
+    }, headers=_hdr(workspace))
+    assert r.status_code == 200, r.text
+    assert r.json()["data"]["channel"] is None
+
+
+# ---------------------------------------------------------------------------
+# Full-system journey — exercises every team-interaction feature end to end.
+# In-process (TestClient + SQLite), so it verifies the real app without docker.
+# ---------------------------------------------------------------------------
+
+def test_full_team_journey(client, workspace):
+    net = workspace["id"]
+    for name in ("alice", "bob", "carol"):
+        _join(client, workspace, name)
+    ch = workspace["channel"]["name"]
+
+    def post(path, body):
+        return client.post(path, json={"network": net, **body}, headers=_hdr(workspace))
+
+    # 1) alice delegates a task to bob (handoff)
+    tid = post("/v1/a2a/tasks", {"source": "openagents:alice", "contractor": "bob",
+                                 "text": "build login", "context_id": ch}).json()["data"]["id"]
+
+    # 2) fan out a subtask to carol; parent rolls it up
+    sub = post(f"/v1/a2a/tasks/{tid}/subtasks", {"source": "openagents:alice", "contractor": "carol",
+                                                 "text": "write tests"}).json()["data"]
+    assert sub["parentId"] == tid
+
+    # 3) dependency: tid blocked by a new task
+    blk = post("/v1/a2a/tasks", {"source": "openagents:alice", "contractor": "bob",
+                                 "text": "provision db", "context_id": ch}).json()["data"]["id"]
+    dep = post(f"/v1/a2a/tasks/{tid}/dependencies", {"blocked_by": blk, "action": "add"}).json()["data"]
+    assert blk in dep["blockedBy"]
+
+    # 4) progress + review loop (alice's delegation reviewed by carol)
+    post(f"/v1/a2a/tasks/{tid}/status", {"state": "working"})
+    post(f"/v1/a2a/tasks/{tid}/review/request", {"reviewer": "carol"})
+    approved = post(f"/v1/a2a/tasks/{tid}/review/approve", {}).json()["data"]
+    assert approved["review"]["state"] == "approved"
+
+    # 5) comment + clarification round-trip
+    post(f"/v1/a2a/tasks/{tid}/comments", {"author": "openagents:bob", "text": "done"})
+    post(f"/v1/a2a/tasks/{tid}/clarification", {"action": "set", "question": "which provider?"})
+    resolved = post(f"/v1/a2a/tasks/{tid}/clarification", {"action": "resolve", "answer": "Auth0"}).json()["data"]
+    assert resolved["clarification"] is None
+
+    # 6) soft delete + recycle bin + restore (on the blocker)
+    assert post(f"/v1/a2a/tasks/{blk}/delete", {}).json()["data"]["deleted"] is True
+    binned = client.get("/v1/a2a/tasks", params={"network": net, "deleted": "true"}, headers=_hdr(workspace)).json()["data"]["tasks"]
+    assert blk in [t["id"] for t in binned]
+    assert post(f"/v1/a2a/tasks/{blk}/restore", {}).json()["data"]["deleted"] is False
+
+    # 7) timeline captured the journey
+    events = client.get(f"/v1/a2a/tasks/{tid}", params={"network": net}, headers=_hdr(workspace)).json()["data"]["events"]
+    types = {e["type"] for e in events}
+    assert {"task_created", "status_changed", "review_requested", "review_approved",
+            "commented", "dependency_added", "subtask_created"} <= types
+
+    # 8) agent↔agent peer lane: plain DM + consult, consult flag surfaced
+    post("/v1/a2a/messages", {"source": "alice", "to": "bob", "text": "hi"})
+    post("/v1/a2a/messages", {"source": "alice", "to": "bob", "text": "which db?", "expects_reply": True})
+    msgs = client.get("/v1/a2a/messages", params={"network": net, "channel": "dm-alice~bob"}, headers=_hdr(workspace)).json()["data"]["messages"]
+    assert any(m["consult"] for m in msgs) and any(not m["consult"] for m in msgs)
+
+    # 9) agent→agent consult with no channel auto-routes through the private DM
+    consult_task = post("/v1/a2a/tasks", {"source": "openagents:alice", "contractor": "carol",
+                                          "text": "quick question"}).json()["data"]
+    assert consult_task["channel"] == "dm-alice~carol"
