@@ -24,7 +24,7 @@ echo
 # Agent activity (launcher daemon) — strip the verbose poll noise.
 if [[ -f "$DAEMON_LOG" ]]; then
   ( tail -n 50 -F "$DAEMON_LOG" 2>/dev/null \
-      | grep --line-buffered -E "Processing message|Spawned persistent|adapter stopped|Rate limited|ERROR|error|consult" \
+      | grep --line-buffered -E "Processing message|Spawned persistent|adapter stopped|Rate limited|ERROR|error|consult|Poll #[0-9]+ failed|Heartbeat failed" \
       | sed -u -E 's/.*adapter \[([^]]+)\]: /[agent] \1 │ /; s/.*daemon: /[daemon] /' ) &
 fi
 
