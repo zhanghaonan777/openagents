@@ -960,3 +960,32 @@ def test_full_team_journey(client, workspace):
     consult_task = post("/v1/a2a/tasks", {"source": "openagents:alice", "contractor": "carol",
                                           "text": "quick question"}).json()["data"]
     assert consult_task["channel"] == "dm-alice~carol"
+
+
+# ---------------------------------------------------------------------------
+# Consult — synchronous ask-a-teammate (AG2 nested-chat analogue)
+# ---------------------------------------------------------------------------
+
+def test_consult_self_rejected(client, workspace):
+    _join(client, workspace, "alice")
+    r = client.post("/v1/a2a/consult", json={"network": workspace["id"], "source": "alice", "to": "alice", "question": "x"}, headers=_hdr(workspace))
+    assert r.status_code == 400
+
+
+def test_consult_unknown_teammate_rejected(client, workspace):
+    _join(client, workspace, "alice")
+    r = client.post("/v1/a2a/consult", json={"network": workspace["id"], "source": "alice", "to": "ghost", "question": "x"}, headers=_hdr(workspace))
+    assert r.status_code == 400
+
+
+def test_consult_times_out_and_posts_question(client, workspace):
+    """With no live teammate, consult posts the question into the DM thread and
+    returns answered=False after the wait — the question is delivered."""
+    _join(client, workspace, "alice")
+    _join(client, workspace, "bob")
+    r = client.post("/v1/a2a/consult", json={"network": workspace["id"], "source": "alice", "to": "bob", "question": "which database did we pick?", "wait": 1}, headers=_hdr(workspace))
+    assert r.status_code == 200, r.text
+    d = r.json()["data"]
+    assert d["answered"] is False and d["from"] == "bob"
+    msgs = client.get("/v1/a2a/messages", params={"network": workspace["id"], "channel": "dm-alice~bob"}, headers=_hdr(workspace)).json()["data"]["messages"]
+    assert any("which database" in m["text"] for m in msgs)

@@ -1658,3 +1658,105 @@ def list_peer_messages(
         })
     threads.sort(key=lambda t: t["lastAt"] or 0, reverse=True)
     return success_response({"threads": threads})
+
+
+# ---------------------------------------------------------------------------
+# Consult — synchronous "ask a teammate and get the answer back" (nested chat)
+# ---------------------------------------------------------------------------
+# The distributed-architecture analogue of AG2/AutoGen's register_nested_chats
+# (conversable_agent.py): an agent, before answering, runs a sub-conversation
+# with a teammate and uses the result. Here the *server* orchestrates that
+# sub-conversation: post the question into the pair's DM channel (which triggers
+# the teammate), block until the teammate replies, and return the reply — so the
+# asker's single call gets the answer inline. Agents invoke it via curl/exec or
+# the consult_teammate MCP tool.
+
+class ConsultRequest(BaseModel):
+    network: str
+    source: str                   # the asking agent
+    to: str                       # the teammate being consulted
+    question: str
+    wait: int = 60                # max seconds to block for the reply
+
+
+@router.post("/consult")
+def consult_teammate(
+    body: ConsultRequest,
+    db: Session = Depends(get_db),
+    x_workspace_token: Optional[str] = Header(None),
+    authorization: Optional[str] = Header(None),
+):
+    """Ask a teammate a question and block until they answer (or timeout).
+
+    Posts the question into the pair's private DM channel (triggering the
+    teammate via normal routing), then long-polls for the teammate's reply and
+    returns it. The server runs the sub-conversation; the caller gets the answer
+    back in one synchronous call (AG2 nested-chat, adapted to our event bus).
+    """
+    workspace = _resolve_workspace(db, body.network)
+    if not workspace:
+        return json_response(ResponseCode.NOT_FOUND, "Network not found")
+    if not _verify_workspace_access(workspace, x_workspace_token, authorization):
+        return json_response(ResponseCode.UNAUTHORIZED, "Invalid credentials")
+
+    question = (body.question or "").strip()
+    if not question:
+        return json_response(ResponseCode.BAD_REQUEST, "Empty question")
+    from_name = _agent_name(body.source)
+    to_name = _agent_name(body.to)
+    if from_name == to_name:
+        return json_response(ResponseCode.BAD_REQUEST, "An agent cannot consult itself")
+    if not _is_member(db, str(workspace.id), from_name):
+        return json_response(ResponseCode.BAD_REQUEST, f"Unknown asker '{from_name}'")
+    if not _is_member(db, str(workspace.id), to_name):
+        return json_response(ResponseCode.BAD_REQUEST, f"Unknown teammate '{to_name}'")
+
+    channel = _ensure_dm_channel(db, workspace, from_name, to_name)
+    # Watermark just before posting — we wait for a reply from `to` newer than this.
+    asked_at_ms = int(_now().timestamp() * 1000)
+    try:
+        event = Event(
+            type="workspace.message.posted",
+            source=_agent_address(from_name),
+            target=f"channel/{channel}",
+            payload={"content": f"@{to_name} {question}  · please answer concisely.", "message_type": "peer"},
+            metadata={"peer": {"from": from_name, "to": to_name, "consult": True}},
+        )
+        _emit_event_blocking(event, workspace, db, token=x_workspace_token)
+    except Exception:
+        logger.exception("a2a: consult question delivery failed (%s → %s)", from_name, to_name)
+        return json_response(ResponseCode.BAD_REQUEST, "Failed to deliver question")
+    db.commit()
+
+    # Long-poll for the teammate's reply in this DM channel (skip thinking/status).
+    # Capture plain values up front — db.close() between polls detaches ORM
+    # objects, so the query must not touch `workspace`/other ORM attributes.
+    to_addr = _agent_address(to_name)
+    ws_id = str(workspace.id)
+    channel_target = f"channel/{channel}"
+    deadline = time.time() + min(max(body.wait, 1), MAX_WAIT_SECONDS)
+    while time.time() < deadline:
+        db.close()                # release the pooled connection while we wait
+        time.sleep(3)
+        reply = db.execute(
+            select(EventRecord).where(
+                EventRecord.network_id == ws_id,
+                EventRecord.target == channel_target,
+                EventRecord.type == "workspace.message.posted",
+                EventRecord.source == to_addr,
+                EventRecord.timestamp > asked_at_ms,
+            ).order_by(EventRecord.timestamp.asc())
+        ).scalars().first()
+        if reply is None:
+            continue
+        mtype = (reply.payload or {}).get("message_type")
+        if mtype in ("thinking", "status", "todos"):
+            continue
+        text = _strip_leading_mention((reply.payload or {}).get("content") or "")
+        if text:
+            return success_response({"answered": True, "from": to_name, "answer": text, "channel": channel})
+
+    return success_response({
+        "answered": False, "from": to_name, "answer": None, "channel": channel,
+        "note": f"{to_name} did not reply within {body.wait}s (may be offline or busy).",
+    })
