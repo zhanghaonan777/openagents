@@ -838,6 +838,24 @@ def _load_task(db: Session, workspace_id: str, task_id: str) -> Optional[TaskRec
     ).scalar_one_or_none()
 
 
+def _resolve_task_ctx(db, network, token, authorization, task_id):
+    """Resolve (workspace, task) with the standard auth + not-found guards.
+
+    Returns ``(workspace, task, error)``. On failure ``error`` is a ready-to-
+    return json_response (and the other two may be None); on success ``error``
+    is None. Collapses the auth+load preamble repeated across task endpoints.
+    """
+    workspace = _resolve_workspace(db, network)
+    if not workspace:
+        return None, None, json_response(ResponseCode.NOT_FOUND, "Network not found")
+    if not _verify_workspace_access(workspace, token, authorization):
+        return None, None, json_response(ResponseCode.UNAUTHORIZED, "Invalid credentials")
+    task = _load_task(db, str(workspace.id), task_id)
+    if not task:
+        return workspace, None, json_response(ResponseCode.NOT_FOUND, "Task not found")
+    return workspace, task, None
+
+
 @router.get("/tasks/{task_id}")
 def get_task(
     task_id: str,
@@ -868,15 +886,9 @@ def update_task_status(
 ):
     """Advance the task lifecycle. The contractor (Phase 2: via a delegation
     skill) or the UI calls this to move working/completed/failed/etc."""
-    workspace = _resolve_workspace(db, body.network)
-    if not workspace:
-        return json_response(ResponseCode.NOT_FOUND, "Network not found")
-    if not _verify_workspace_access(workspace, x_workspace_token, authorization):
-        return json_response(ResponseCode.UNAUTHORIZED, "Invalid credentials")
-
-    task = _load_task(db, str(workspace.id), task_id)
-    if not task:
-        return json_response(ResponseCode.NOT_FOUND, "Task not found")
+    workspace, task, err = _resolve_task_ctx(db, body.network, x_workspace_token, authorization, task_id)
+    if err:
+        return err
 
     new_state = body.state
     if new_state not in (TERMINAL_STATES | {"working", "input_required"}):
@@ -912,15 +924,9 @@ def cancel_task(
     x_workspace_token: Optional[str] = Header(None),
     authorization: Optional[str] = Header(None),
 ):
-    workspace = _resolve_workspace(db, body.network)
-    if not workspace:
-        return json_response(ResponseCode.NOT_FOUND, "Network not found")
-    if not _verify_workspace_access(workspace, x_workspace_token, authorization):
-        return json_response(ResponseCode.UNAUTHORIZED, "Invalid credentials")
-
-    task = _load_task(db, str(workspace.id), task_id)
-    if not task:
-        return json_response(ResponseCode.NOT_FOUND, "Task not found")
+    workspace, task, err = _resolve_task_ctx(db, body.network, x_workspace_token, authorization, task_id)
+    if err:
+        return err
     if task.state in TERMINAL_STATES:
         return json_response(ResponseCode.BAD_REQUEST, f"Task is already {task.state}")
 
@@ -966,15 +972,9 @@ def request_review(
     must be a workspace member other than the contractor — you can't review your
     own work. Posts an @-mention so the reviewer's runtime picks it up.
     """
-    workspace = _resolve_workspace(db, body.network)
-    if not workspace:
-        return json_response(ResponseCode.NOT_FOUND, "Network not found")
-    if not _verify_workspace_access(workspace, x_workspace_token, authorization):
-        return json_response(ResponseCode.UNAUTHORIZED, "Invalid credentials")
-
-    task = _load_task(db, str(workspace.id), task_id)
-    if not task:
-        return json_response(ResponseCode.NOT_FOUND, "Task not found")
+    workspace, task, err = _resolve_task_ctx(db, body.network, x_workspace_token, authorization, task_id)
+    if err:
+        return err
 
     # Resolve the reviewer: explicit, else the delegator if it's an agent.
     reviewer = body.reviewer
@@ -1029,15 +1029,9 @@ def approve_review(
     authorization: Optional[str] = Header(None),
 ):
     """Reviewer signs off on the deliverable (→ review: approved)."""
-    workspace = _resolve_workspace(db, body.network)
-    if not workspace:
-        return json_response(ResponseCode.NOT_FOUND, "Network not found")
-    if not _verify_workspace_access(workspace, x_workspace_token, authorization):
-        return json_response(ResponseCode.UNAUTHORIZED, "Invalid credentials")
-
-    task = _load_task(db, str(workspace.id), task_id)
-    if not task:
-        return json_response(ResponseCode.NOT_FOUND, "Task not found")
+    workspace, task, err = _resolve_task_ctx(db, body.network, x_workspace_token, authorization, task_id)
+    if err:
+        return err
     review = _pending_review(task)
     if not review:
         return json_response(ResponseCode.BAD_REQUEST, "Task has no pending review")
@@ -1064,15 +1058,9 @@ def request_changes(
 ):
     """Reviewer sends the work back for changes (→ review: changes_requested),
     posting the feedback to the contractor so they pick it up again."""
-    workspace = _resolve_workspace(db, body.network)
-    if not workspace:
-        return json_response(ResponseCode.NOT_FOUND, "Network not found")
-    if not _verify_workspace_access(workspace, x_workspace_token, authorization):
-        return json_response(ResponseCode.UNAUTHORIZED, "Invalid credentials")
-
-    task = _load_task(db, str(workspace.id), task_id)
-    if not task:
-        return json_response(ResponseCode.NOT_FOUND, "Task not found")
+    workspace, task, err = _resolve_task_ctx(db, body.network, x_workspace_token, authorization, task_id)
+    if err:
+        return err
     review = _pending_review(task)
     if not review:
         return json_response(ResponseCode.BAD_REQUEST, "Task has no pending review")
@@ -1219,15 +1207,9 @@ def reassign_task(
     authorization: Optional[str] = Header(None),
 ):
     """Hand a non-terminal task to a different contractor and re-kick it off."""
-    workspace = _resolve_workspace(db, body.network)
-    if not workspace:
-        return json_response(ResponseCode.NOT_FOUND, "Network not found")
-    if not _verify_workspace_access(workspace, x_workspace_token, authorization):
-        return json_response(ResponseCode.UNAUTHORIZED, "Invalid credentials")
-
-    task = _load_task(db, str(workspace.id), task_id)
-    if not task:
-        return json_response(ResponseCode.NOT_FOUND, "Task not found")
+    workspace, task, err = _resolve_task_ctx(db, body.network, x_workspace_token, authorization, task_id)
+    if err:
+        return err
     if task.state in TERMINAL_STATES:
         return json_response(ResponseCode.BAD_REQUEST, f"Task is already {task.state}")
 
@@ -1269,15 +1251,9 @@ def nudge_task(
     authorization: Optional[str] = Header(None),
 ):
     """Poke the contractor of a non-terminal task to continue / report status."""
-    workspace = _resolve_workspace(db, body.network)
-    if not workspace:
-        return json_response(ResponseCode.NOT_FOUND, "Network not found")
-    if not _verify_workspace_access(workspace, x_workspace_token, authorization):
-        return json_response(ResponseCode.UNAUTHORIZED, "Invalid credentials")
-
-    task = _load_task(db, str(workspace.id), task_id)
-    if not task:
-        return json_response(ResponseCode.NOT_FOUND, "Task not found")
+    workspace, task, err = _resolve_task_ctx(db, body.network, x_workspace_token, authorization, task_id)
+    if err:
+        return err
     if task.state in TERMINAL_STATES:
         return json_response(ResponseCode.BAD_REQUEST, f"Task is already {task.state}")
 
@@ -1441,15 +1417,9 @@ def soft_delete_task(
     A task_metadata overlay — the TaskRecord is never destroyed, so the A2A
     lifecycle/history survive and the task can be brought back intact.
     """
-    workspace = _resolve_workspace(db, body.network)
-    if not workspace:
-        return json_response(ResponseCode.NOT_FOUND, "Network not found")
-    if not _verify_workspace_access(workspace, x_workspace_token, authorization):
-        return json_response(ResponseCode.UNAUTHORIZED, "Invalid credentials")
-
-    task = _load_task(db, str(workspace.id), task_id)
-    if not task:
-        return json_response(ResponseCode.NOT_FOUND, "Task not found")
+    workspace, task, err = _resolve_task_ctx(db, body.network, x_workspace_token, authorization, task_id)
+    if err:
+        return err
 
     meta = dict(task.task_metadata or {})
     if not meta.get("deleted"):
@@ -1469,15 +1439,9 @@ def restore_task(
     authorization: Optional[str] = Header(None),
 ):
     """Bring a task back from the recycle bin."""
-    workspace = _resolve_workspace(db, body.network)
-    if not workspace:
-        return json_response(ResponseCode.NOT_FOUND, "Network not found")
-    if not _verify_workspace_access(workspace, x_workspace_token, authorization):
-        return json_response(ResponseCode.UNAUTHORIZED, "Invalid credentials")
-
-    task = _load_task(db, str(workspace.id), task_id)
-    if not task:
-        return json_response(ResponseCode.NOT_FOUND, "Task not found")
+    workspace, task, err = _resolve_task_ctx(db, body.network, x_workspace_token, authorization, task_id)
+    if err:
+        return err
 
     meta = dict(task.task_metadata or {})
     if meta.get("deleted"):
