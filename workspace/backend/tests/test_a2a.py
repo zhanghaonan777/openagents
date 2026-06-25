@@ -989,3 +989,34 @@ def test_consult_times_out_and_posts_question(client, workspace):
     assert d["answered"] is False and d["from"] == "bob"
     msgs = client.get("/v1/a2a/messages", params={"network": workspace["id"], "channel": "dm-alice~bob"}, headers=_hdr(workspace)).json()["data"]["messages"]
     assert any("which database" in m["text"] for m in msgs)
+
+
+def test_consult_skips_intermediate_status_message(client, workspace, db):
+    """Regression: the teammate posts a 'thinking'/status message before the
+    real chat answer. The ascending poll must step past the status and return
+    the chat — not get stuck on the status and time out (the bug where the
+    teammate answered in seconds but consult still reported a timeout)."""
+    import time as _t
+    from app.models import EventRecord
+    _join(client, workspace, "alice")
+    _join(client, workspace, "bob")
+    future = int(_t.time() * 1000) + 60000
+    for i, (ts, mt, content) in enumerate([
+        (future, "status", "thinking..."),
+        (future + 1, "chat", "@alice the IP limit is 60/min"),
+    ]):
+        db.add(EventRecord(
+            id=f"csk{i}", network_id=workspace["id"], type="workspace.message.posted",
+            source="openagents:bob", target="channel/dm-alice~bob",
+            payload={"content": content, "message_type": mt}, metadata_={},
+            timestamp=ts, visibility="channel",
+        ))
+    db.commit()
+    r = client.post("/v1/a2a/consult", json={
+        "network": workspace["id"], "source": "alice", "to": "bob",
+        "question": "rate limit?", "wait": 20,
+    }, headers=_hdr(workspace))
+    assert r.status_code == 200, r.text
+    d = r.json()["data"]
+    assert d["answered"] is True, d
+    assert "60/min" in d["answer"]

@@ -1740,6 +1740,12 @@ def consult_teammate(
     while time.time() < deadline:
         db.close()                # release the pooled connection while we wait
         time.sleep(3)
+        # Earliest message from `to` after the watermark. The teammate often
+        # posts an intermediate "thinking"/status before the real answer, so on
+        # those we ADVANCE the watermark past them — otherwise the ascending
+        # `.first()` keeps returning the same status message and never reaches
+        # the chat reply (the bug where the teammate answered but consult still
+        # timed out).
         reply = db.execute(
             select(EventRecord).where(
                 EventRecord.network_id == ws_id,
@@ -1751,8 +1757,8 @@ def consult_teammate(
         ).scalars().first()
         if reply is None:
             continue
-        mtype = (reply.payload or {}).get("message_type")
-        if mtype in ("thinking", "status", "todos"):
+        if (reply.payload or {}).get("message_type") in ("thinking", "status", "todos"):
+            asked_at_ms = reply.timestamp     # step past the intermediate message
             continue
         text = _strip_leading_mention((reply.payload or {}).get("content") or "")
         if text:
