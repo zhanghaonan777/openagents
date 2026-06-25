@@ -1,5 +1,5 @@
 import type { Metadata, Viewport } from 'next';
-import { Inter } from 'next/font/google';
+import localFont from 'next/font/local';
 import Script from 'next/script';
 import { ThemeProvider } from 'next-themes';
 import { Toaster } from '@/components/ui/sonner';
@@ -7,7 +7,12 @@ import { AuthProvider } from '@/lib/auth-context';
 import { OpenAgentsAuthProvider } from '@/lib/openagents-auth-context';
 import '@/styles/globals.css';
 
-const inter = Inter({ subsets: ['latin'] });
+// Self-hosted Inter (variable weight) — avoids a build-time fetch to Google Fonts.
+const inter = localFont({
+  src: './fonts/inter-latin-variable.woff2',
+  display: 'swap',
+  weight: '100 900',
+});
 
 export const metadata: Metadata = {
   title: 'OpenAgents Workspace',
