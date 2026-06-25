@@ -12,7 +12,8 @@ import { cn } from '@/lib/utils';
 import { toast } from 'sonner';
 import { timeAgoShort as timeAgo } from '@/lib/helpers';
 import { taskRequestText, taskArtifactText, taskStatusMeta, stripDelegationPlumbing } from '@/lib/a2a';
-import { MESSAGE_TYPE, type CloudAgentConfig, type WorkspaceMessage } from '@/lib/types';
+import { MESSAGE_TYPE, type CloudAgentConfig, type WorkspaceMessage, type PeerThread, type PeerMessage } from '@/lib/types';
+import { MessageKindBadge, BUBBLE_ME, BUBBLE_OTHER } from '@/components/chat/message-kind';
 import { classifyActivity } from '@/lib/agent-activity';
 
 export function AgentProfilePanel() {
@@ -25,7 +26,7 @@ export function AgentProfilePanel() {
   const isCloud = agent?.agentType?.startsWith('cloud:') ?? false;
 
   // ── History: which view + the agent's own recent messages ──
-  const [tab, setTab] = useState<'tasks' | 'activity' | 'profile'>('activity');
+  const [tab, setTab] = useState<'chats' | 'tasks' | 'activity' | 'profile'>('chats');
   const [activity, setActivity] = useState<WorkspaceMessage[]>([]);
   const [activityLoading, setActivityLoading] = useState(false);
   const [expandedActivity, setExpandedActivity] = useState<Set<string>>(new Set());
@@ -35,10 +36,33 @@ export function AgentProfilePanel() {
     return next;
   });
 
+  // ── "View as this agent": its 1:1 conversations, rendered from ITS side ──
+  const [chatThreads, setChatThreads] = useState<PeerThread[]>([]);
+  const [openChat, setOpenChat] = useState<string | null>(null);
+  const [chatMsgs, setChatMsgs] = useState<Record<string, PeerMessage[]>>({});
+  const loadChat = useCallback(async (channel: string) => {
+    try { const r = await workspaceApi.getA2APeerThread(channel); setChatMsgs((m) => ({ ...m, [channel]: r.messages })); }
+    catch { /* best-effort */ }
+  }, []);
+  useEffect(() => {
+    if (!selectedAgentName) { setChatThreads([]); setOpenChat(null); return; }
+    let alive = true;
+    workspaceApi.listA2APeerThreads()
+      .then((r) => {
+        if (!alive) return;
+        const mine = r.threads.filter((t) => t.participants.includes(selectedAgentName));
+        setChatThreads(mine);
+        setOpenChat(mine[0]?.channel ?? null);     // auto-open the most recent conversation
+      })
+      .catch(() => {});
+    return () => { alive = false; };
+  }, [selectedAgentName]);
+  useEffect(() => { if (openChat) loadChat(openChat); }, [openChat, loadChat]);
+
   // Fetch the agent's session activity on open, then live-poll it (silent) so the
   // timeline stays current while the panel is open.
   useEffect(() => {
-    setTab('activity');
+    setTab('chats');
     if (!selectedAgentName) { setActivity([]); return; }
     let alive = true;
     const load = (spinner: boolean) => {
@@ -247,7 +271,7 @@ export function AgentProfilePanel() {
 
         {/* Tabs — Tasks / Activity / Profile, switch within the panel */}
         <div className="px-5 flex items-center gap-1 border-b shrink-0">
-          {([['tasks', 'Tasks'], ['activity', 'Activity'], ['profile', 'Profile']] as const).map(([id, label]) => (
+          {([['chats', 'Chats'], ['tasks', 'Tasks'], ['activity', 'Activity'], ['profile', 'Profile']] as const).map(([id, label]) => (
             <button
               key={id}
               onClick={() => setTab(id)}
@@ -267,6 +291,80 @@ export function AgentProfilePanel() {
 
         {/* Body */}
         <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
+          {/* Chats — WeChat-style 2-pane (conversation list ┃ open conversation),
+              seen from THIS agent's side (its own messages on the right). */}
+          {tab === 'chats' && (
+            <div className="flex-1 min-h-0 flex">
+              {/* Left: conversation list (no folding) */}
+              <div className="w-[240px] shrink-0 border-r border-border overflow-y-auto bg-muted/20">
+                {chatThreads.length === 0 ? (
+                  <p className="text-[12px] text-muted-foreground/70 p-3">{selectedAgentName} has no chats yet.</p>
+                ) : chatThreads.map((t) => {
+                  const other = t.participants.find((p) => p !== selectedAgentName) || '?';
+                  const active = openChat === t.channel;
+                  return (
+                    <button
+                      key={t.channel}
+                      onClick={() => setOpenChat(t.channel)}
+                      className={cn(
+                        'w-full flex items-center gap-2.5 px-3 py-2.5 text-left border-b border-border/40 transition-colors',
+                        active ? 'bg-primary/10' : 'hover:bg-muted/50',
+                      )}
+                    >
+                      <AgentAvatar name={other} size={38} square className="shrink-0" />
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-baseline gap-1">
+                          <span className="text-[13px] font-medium truncate flex-1">{other}</span>
+                          {t.lastAt && <span className="text-[10px] text-muted-foreground/60 shrink-0">{timeAgo(new Date(t.lastAt))}</span>}
+                        </div>
+                        {t.lastText && <p className="text-[11.5px] text-muted-foreground truncate mt-0.5">{t.lastFrom === selectedAgentName ? 'me: ' : ''}{t.lastText}</p>}
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+
+              {/* Right: the open conversation, from this agent's perspective */}
+              {(() => {
+                const t = chatThreads.find((x) => x.channel === openChat);
+                if (!openChat || !t) {
+                  return <div className="flex-1 flex items-center justify-center text-[13px] text-muted-foreground/50">Pick a conversation</div>;
+                }
+                const other = t.participants.find((p) => p !== selectedAgentName) || '?';
+                const list = chatMsgs[openChat] || [];
+                return (
+                  <div className="flex-1 min-w-0 flex flex-col">
+                    <div className="shrink-0 px-4 py-2.5 border-b border-border flex items-center gap-2">
+                      <AgentAvatar name={other} size={24} />
+                      <span className="text-[13.5px] font-semibold">{other}</span>
+                      <span className="text-[11px] text-muted-foreground ml-auto">viewing as {selectedAgentName}</span>
+                    </div>
+                    <div className="flex-1 overflow-y-auto px-4 py-3 space-y-3 bg-muted/10">
+                      {list.length === 0 ? (
+                        <p className="text-[12px] text-muted-foreground/60">No messages.</p>
+                      ) : list.map((m) => {
+                        const mine = m.from === selectedAgentName;
+                        return (
+                          <div key={m.id} className={cn('flex gap-2 items-end', mine && 'flex-row-reverse')}>
+                            <AgentAvatar name={m.from} size={28} square className="shrink-0 mb-0.5" />
+                            <div className={cn('flex flex-col max-w-[68%]', mine ? 'items-end' : 'items-start')}>
+                              {m.consult && <div className="mb-0.5"><MessageKindBadge kind="consult" /></div>}
+                              <div className={cn(
+                                'px-3 py-2 text-[13px] leading-relaxed whitespace-pre-wrap break-words rounded-2xl',
+                                mine ? cn(BUBBLE_ME, 'rounded-tr-md') : cn(BUBBLE_OTHER, 'rounded-tl-md'),
+                              )}>{m.text}</div>
+                              <span className="text-[9px] text-muted-foreground/50 mt-0.5 px-0.5">{timeAgo(new Date(m.at))}</span>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                );
+              })()}
+            </div>
+          )}
+
           {/* Tasks — this agent as contractor */}
           {tab === 'tasks' && (
             <div className="flex-1 overflow-y-auto">

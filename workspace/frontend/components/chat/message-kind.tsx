@@ -37,6 +37,14 @@ export function messageKind(m: WorkspaceMessage): MsgKind | null {
   return null;
 }
 
+/**
+ * WeChat-style chat-bubble colours — one source of truth so "my" messages are
+ * the same green everywhere (chat stream, agent DMs, agent perspective view)
+ * instead of three slightly different greens.
+ */
+export const BUBBLE_ME = 'bg-[#95EC69] text-zinc-900 dark:bg-emerald-600 dark:text-white';
+export const BUBBLE_OTHER = 'bg-white text-foreground/90 border border-border dark:bg-zinc-800';
+
 /** A small icon+label chip identifying the message kind. */
 export function MessageKindBadge({ kind, className }: { kind: MsgKind; className?: string }) {
   const { label, Icon, cls } = KIND_META[kind];

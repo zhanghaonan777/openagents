@@ -6,7 +6,7 @@ import { Copy, Check, User, FileIcon, Download, Eye, WifiOff } from 'lucide-reac
 import { toast } from 'sonner';
 import { memo, useCallback, useMemo, useState } from 'react';
 import { MESSAGE_TYPE, type WorkspaceMessage, type WorkspaceAgent, type A2ATask } from '@/lib/types';
-import { messageKind, MessageKindBadge, KIND_META } from './message-kind';
+import { messageKind, MessageKindBadge, KIND_META, BUBBLE_ME, BUBBLE_OTHER } from './message-kind';
 import { AgentAvatar } from '@/components/agents/agent-avatar';
 import { MarkdownContent } from './markdown-content';
 import { workspaceApi } from '@/lib/api';
@@ -260,98 +260,92 @@ export const ChatMessage = memo(function ChatMessage({ message, agents = [] }: C
     );
   }
 
-  // ── Human message — Slack style ──
+  // ── Human message — WeChat-style bubble (me → right/green, others → left) ──
   if (isHuman) {
     const isCurrentUser = !!message.senderId && message.senderId === currentUser.id;
     const displayName = isCurrentUser
       ? 'You'
       : (message.senderName && message.senderName !== 'user' ? message.senderName : 'User');
     const seed = message.senderId || message.senderName || 'human';
+    const me = isCurrentUser;
 
     return (
-      <div className="py-1.5">
-        <div className="flex items-start gap-2">
-          <div
-            className="size-9 rounded-lg shrink-0 flex items-center justify-center mt-0.5"
-            style={{ backgroundColor: humanColor(seed) }}
-          >
-            <User className="size-4 text-zinc-700" />
+      <div className={cn('flex gap-2 py-1', me && 'flex-row-reverse')}>
+        <div
+          className="size-9 rounded-lg shrink-0 flex items-center justify-center"
+          style={{ backgroundColor: humanColor(seed) }}
+        >
+          <User className="size-4 text-zinc-700" />
+        </div>
+        <div className={cn('flex flex-col min-w-0 max-w-[78%]', me ? 'items-end' : 'items-start')}>
+          {!me && <span className="text-[11px] text-muted-foreground mb-0.5 px-1">{displayName}</span>}
+          <div className={cn(
+            'px-3 py-2 text-sm leading-relaxed break-words rounded-2xl',
+            me ? cn(BUBBLE_ME, 'rounded-tr-md') : cn(BUBBLE_OTHER, 'rounded-tl-md'),
+          )}>
+            <MarkdownContent content={message.content} agentNames={agentNames} />
+            <Attachments items={attachments} />
           </div>
-          <div className="flex-1 min-w-0">
-            <div className="flex items-baseline gap-2">
-              <span className="text-[15px] font-bold text-foreground">{displayName}</span>
-              {timestamp && (
-                <span className="text-xs text-muted-foreground">{timestamp}</span>
-              )}
-            </div>
-            <div className="text-sm leading-relaxed mt-0.5">
-              <MarkdownContent content={message.content} agentNames={agentNames} />
-              <Attachments items={attachments} />
-              <OfflineSkippedNote names={(message.metadata?.offline_skipped as string[]) || []} />
-            </div>
-          </div>
+          <OfflineSkippedNote names={(message.metadata?.offline_skipped as string[]) || []} />
+          {timestamp && <span className="text-[10px] text-muted-foreground mt-0.5 px-1">{timestamp}</span>}
         </div>
       </div>
     );
   }
 
-  // ── Agent message — Slack style ──
+  // ── Agent message — WeChat-style bubble (left, name above) ──
   return (
-    <div className="py-1.5">
-      <div className="flex items-start gap-2">
-        <AgentAvatar name={message.senderName} size={36} square className="mt-0.5" />
-        <div className="flex-1 min-w-0">
-          <div className="flex items-baseline gap-2">
-            <span className="text-[15px] font-bold text-foreground truncate">
-              {message.senderName}
+    <div className="flex gap-2 py-1 group">
+      <AgentAvatar name={message.senderName} size={36} square className="shrink-0" />
+      <div className="flex flex-col min-w-0 max-w-[82%] items-start">
+        <div className="flex items-center gap-1.5 mb-0.5 px-1">
+          <span className="text-[11.5px] font-semibold text-foreground/80 truncate">
+            {message.senderName}
+          </span>
+          {agent && agent.role === 'master' && (
+            <span className="text-[9px] px-1 py-px rounded font-semibold shrink-0 bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400">
+              master
             </span>
-            {agent && (
-              <span className={cn(
-                'text-[10px] px-1.5 py-0.5 rounded font-semibold shrink-0',
-                agent.role === 'master'
-                  ? 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400'
-                  : 'bg-zinc-100 text-zinc-500 dark:bg-zinc-800 dark:text-zinc-400'
-              )}>
-                {agent.role}
-              </span>
-            )}
-            {kind && <MessageKindBadge kind={kind} />}
-            {timestamp && (
-              <span className="text-xs text-muted-foreground">{timestamp}</span>
-            )}
-          </div>
-          <div
-            className={cn('text-sm leading-relaxed mt-0.5', kind && 'border-l-2 pl-2.5')}
-            style={kind ? { borderColor: KIND_META[kind].dot } : undefined}
-          >
-            <MarkdownContent content={displayContent} agentNames={agentNames} />
-            <Attachments items={attachments} />
+          )}
+          {kind && <MessageKindBadge kind={kind} />}
+        </div>
+        <div
+          className={cn(
+            'px-3 py-2 text-sm leading-relaxed break-words rounded-2xl rounded-tl-md',
+            BUBBLE_OTHER,
+            kind && 'border-l-[3px]',
+          )}
+          style={kind ? { borderLeftColor: KIND_META[kind].dot } : undefined}
+        >
+          <MarkdownContent content={displayContent} agentNames={agentNames} />
+          <Attachments items={attachments} />
+        </div>
 
-            {/* Delegate → linked task card (jumps to the board) */}
-            {isDelegate && (() => {
-              const taskId = message.metadata?.taskId as string | undefined;
-              const task = taskId ? a2aTasks.find((t) => t.id === taskId) : undefined;
-              return task ? (
-                <DelegateTaskCard
-                  task={task}
-                  onJump={() => { setViewMode('tasks'); setFlashTaskId(task.id); }}
-                />
-              ) : null;
-            })()}
-
-            {/* Copy button */}
-            <div className="flex items-center gap-1 mt-1">
-              <Button
-                variant="ghost"
-                size="sm"
-                className="h-6 px-1.5 text-xs text-muted-foreground hover:text-foreground gap-1"
-                onClick={handleCopy}
-              >
-                {copied ? <Check className="size-3" /> : <Copy className="size-3" />}
-                {copied ? 'Copied' : 'Copy'}
-              </Button>
+        {/* Delegate → linked task card (jumps to the board) */}
+        {isDelegate && (() => {
+          const taskId = message.metadata?.taskId as string | undefined;
+          const task = taskId ? a2aTasks.find((t) => t.id === taskId) : undefined;
+          return task ? (
+            <div className="mt-1 w-full">
+              <DelegateTaskCard
+                task={task}
+                onJump={() => { setViewMode('tasks'); setFlashTaskId(task.id); }}
+              />
             </div>
-          </div>
+          ) : null;
+        })()}
+
+        <div className="flex items-center gap-1.5 px-1 mt-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+          {timestamp && <span className="text-[10px] text-muted-foreground">{timestamp}</span>}
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-5 px-1 text-[10px] text-muted-foreground hover:text-foreground gap-1"
+            onClick={handleCopy}
+          >
+            {copied ? <Check className="size-2.5" /> : <Copy className="size-2.5" />}
+            {copied ? 'Copied' : 'Copy'}
+          </Button>
         </div>
       </div>
     </div>

@@ -5,7 +5,7 @@ import { cn } from '@/lib/utils';
 import { MessagesSquare, Send, ArrowRight, ChevronRight, RefreshCw, HelpCircle } from 'lucide-react';
 import { useWorkspace } from '@/lib/workspace-context';
 import { AgentAvatar } from '@/components/agents/agent-avatar';
-import { MessageKindBadge } from '@/components/chat/message-kind';
+import { MessageKindBadge, BUBBLE_ME, BUBBLE_OTHER } from '@/components/chat/message-kind';
 import { timeAgoShort as timeAgo } from '@/lib/helpers';
 import { workspaceApi } from '@/lib/api';
 import type { PeerThread, PeerMessage } from '@/lib/types';
@@ -141,24 +141,28 @@ export function AgentDms() {
                   {t.lastAt && <span className="text-[10px] font-mono text-muted-foreground/60 shrink-0">{timeAgo(new Date(t.lastAt))}</span>}
                 </button>
                 {expanded && (
-                  <div className="px-3 pb-2.5 pt-1 space-y-2 border-t border-border/60">
+                  <div className="px-3 pb-2.5 pt-2 space-y-2.5 border-t border-border/60 bg-muted/20">
                     {list.length === 0 ? (
                       <p className="text-[11.5px] text-muted-foreground/60 pt-1">No messages.</p>
-                    ) : list.map((m) => (
-                      <div key={m.id} className="flex gap-2">
-                        <AgentAvatar name={m.from} size={18} className="mt-0.5 shrink-0" />
-                        <div className="min-w-0 flex-1">
-                          <div className="flex items-baseline gap-1.5">
-                            <span className="text-[11.5px] font-semibold truncate">{m.from}</span>
-                            {m.consult && <MessageKindBadge kind="consult" />}
-                            <span className="text-[10px] font-mono text-muted-foreground/60">{timeAgo(new Date(m.at))}</span>
+                    ) : list.map((m) => {
+                      const right = m.from === t.participants[1];
+                      return (
+                        <div key={m.id} className={cn('flex gap-1.5 items-end', right && 'flex-row-reverse')}>
+                          <AgentAvatar name={m.from} size={20} className="shrink-0 mb-0.5" />
+                          <div className={cn('flex flex-col max-w-[78%]', right ? 'items-end' : 'items-start')}>
+                            <div className="flex items-center gap-1 mb-0.5 px-0.5">
+                              <span className="text-[10px] text-muted-foreground/70">{m.from}</span>
+                              {m.consult && <MessageKindBadge kind="consult" />}
+                              <span className="text-[9px] font-mono text-muted-foreground/50">{timeAgo(new Date(m.at))}</span>
+                            </div>
+                            <div className={cn(
+                              'px-2.5 py-1.5 text-[12px] leading-snug whitespace-pre-wrap break-words rounded-xl',
+                              right ? cn(BUBBLE_ME, 'rounded-tr-sm') : cn(BUBBLE_OTHER, 'rounded-tl-sm'),
+                            )}>{m.text}</div>
                           </div>
-                          <p
-                            className={cn('text-[12px] leading-snug text-foreground/85 whitespace-pre-wrap', m.consult && 'border-l-2 border-amber-400/60 pl-2')}
-                          >{m.text}</p>
                         </div>
-                      </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 )}
               </li>

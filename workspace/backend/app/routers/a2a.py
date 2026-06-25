@@ -321,6 +321,12 @@ def _set_review(t: TaskRecord, **fields) -> dict:
     return review
 
 
+def _pending_review(t: TaskRecord) -> dict | None:
+    """Return the task's review overlay iff it's awaiting a decision, else None."""
+    review = (t.task_metadata or {}).get("review")
+    return review if review and review.get("state") == "pending" else None
+
+
 def _edit_dep(t: TaskRecord, key: str, other_id: str, add: bool) -> None:
     """Add/remove a dependency edge (key='blockedBy'|'blocks') on a task,
     reassigning the JSON dict so SQLAlchemy tracks the change + bumps version."""
@@ -1032,8 +1038,8 @@ def approve_review(
     task = _load_task(db, str(workspace.id), task_id)
     if not task:
         return json_response(ResponseCode.NOT_FOUND, "Task not found")
-    review = (task.task_metadata or {}).get("review")
-    if not review or review.get("state") != "pending":
+    review = _pending_review(task)
+    if not review:
         return json_response(ResponseCode.BAD_REQUEST, "Task has no pending review")
 
     _set_review(
@@ -1067,8 +1073,8 @@ def request_changes(
     task = _load_task(db, str(workspace.id), task_id)
     if not task:
         return json_response(ResponseCode.NOT_FOUND, "Task not found")
-    review = (task.task_metadata or {}).get("review")
-    if not review or review.get("state") != "pending":
+    review = _pending_review(task)
+    if not review:
         return json_response(ResponseCode.BAD_REQUEST, "Task has no pending review")
 
     _set_review(

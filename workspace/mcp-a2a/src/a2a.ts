@@ -93,6 +93,20 @@ export function createTask(
   });
 }
 
+/** Synchronous consult: ask a teammate and block until they reply (or timeout). */
+export function consult(
+  cfg: A2AConfig,
+  p: { to: string; question: string; wait?: number },
+): Promise<{ answered: boolean; from: string; answer: string | null; note?: string }> {
+  return request(cfg, 'POST', '/v1/a2a/consult', {
+    network: cfg.network,
+    source: selfAddress(cfg),
+    to: p.to,
+    question: p.question,
+    wait: p.wait ?? 75,
+  });
+}
+
 export function sendPeerMessage(
   cfg: A2AConfig,
   p: { to: string; text: string; expectsReply?: boolean },

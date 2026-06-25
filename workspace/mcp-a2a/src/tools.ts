@@ -12,6 +12,7 @@ import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import {
   A2AConfig,
   artifactText,
+  consult,
   createTask,
   listAgents,
   listMyTasks,
@@ -98,18 +99,10 @@ export function createToolHandlers(cfg: A2AConfig): Record<string, (a: Args) => 
       const question = str(a.question);
       const context = str(a.context);
       if (!coworker || !question) throw new Error('Invalid input: coworker and question are required');
-      const text = context ? `${question}\n\nContext: ${context}` : question;
-      const task = await createTask(cfg, { contractor: coworker, text, wait: 120 });
-      if (TERMINAL.has(task.state)) {
-        return { answered: true, from: coworker, answer: artifactText(task) ?? '(no answer text)', state: task.state, taskId: task.id };
-      }
-      return {
-        answered: false,
-        from: coworker,
-        state: task.state,
-        taskId: task.id,
-        note: `${coworker} hasn't answered yet (still ${task.state}). They may be offline or busy — check back with my_tasks/the board, or follow up.`,
-      };
+      // Use the dedicated /consult endpoint, which blocks for the teammate's
+      // *reply message* (these agents answer in chat, not by completing a task).
+      const q = context ? `${question}\n\nContext: ${context}` : question;
+      return consult(cfg, { to: coworker, question: q, wait: 75 });
     },
 
     async delegate_to_teammate(a) {
