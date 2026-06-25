@@ -10,6 +10,15 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _stub_bf_key():
+    """Pin a BrowserFabric API key so _resolve_bf_key() returns early and never
+    reaches the auto-provision path (BrowserManager.provision_workspace_key is an
+    async call we don't run against a real BF server in tests)."""
+    with patch("app.routers.browser.BROWSERFABRIC_API_KEY", "test-bf-key"):
+        yield
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------

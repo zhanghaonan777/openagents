@@ -540,25 +540,30 @@ class TestSessionLifecycle:
         sources = [e["source"] for e in events]
         assert "openagents:agent-leaver" in sources
 
-    def test_heartbeat_generates_event(self, client, workspace):
-        """Heartbeat creates a network.ping event."""
+    def test_heartbeat_updates_liveness(self, client, workspace):
+        """Heartbeat marks the agent online and stamps its last_heartbeat.
+
+        network.ping is intentionally not persisted (see persistence._SKIP_PERSIST),
+        so liveness is observed via the roster, not the event log.
+        """
         client.post("/v1/join", json={
             "agent_name": "agent-pinger",
             "token": workspace["token"],
             "network": workspace["id"],
         })
-        client.post("/v1/heartbeat", json={
+        resp = client.post("/v1/heartbeat", json={
             "agent_name": "agent-pinger",
             "network": workspace["id"],
         })
+        assert resp.json()["data"]["status"] == "online"
 
-        resp = client.get("/v1/events", params={
+        roster = client.get("/v1/discover", params={
             "network": workspace["id"],
-            "type": "network.ping",
         }, headers={"X-Workspace-Token": workspace["token"]})
-        events = resp.json()["data"]["events"]
-        sources = [e["source"] for e in events]
-        assert "openagents:agent-pinger" in sources
+        agents = roster.json()["data"]["agents"]
+        pinger = next(a for a in agents if a["address"] == "openagents:agent-pinger")
+        assert pinger["status"] == "online"
+        assert pinger["last_heartbeat_at"] is not None
 
 
 # ===========================================================================
