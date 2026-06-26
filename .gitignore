@@ -278,3 +278,9 @@ deploy/
 workspace/backend/secrets/
 *.p8
 _ref-agent-teams-ai/
+
+# claude-flow / ruflo swarm runtime state (not source)
+.claude-flow/
+.swarm/
+**/.claude-flow/
+**/.swarm/
