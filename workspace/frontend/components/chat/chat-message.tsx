@@ -192,7 +192,7 @@ interface ChatMessageProps {
 
 export const ChatMessage = memo(function ChatMessage({ message, agents = [] }: ChatMessageProps) {
   const { currentUser, a2aTasks } = useWorkspace();
-  const { setViewMode, setFlashTaskId } = useLayout();
+  const { setViewMode, setFlashTaskId, setSelectedAgentName, openMobileDetail } = useLayout();
   const isHuman = message.senderType === 'human' || message.senderType === 'user';
   const isSystem = message.messageType === MESSAGE_TYPE.STATUS;
   const isJoin = message.messageType === MESSAGE_TYPE.JOIN;
@@ -294,9 +294,21 @@ export const ChatMessage = memo(function ChatMessage({ message, agents = [] }: C
   }
 
   // ── Agent message — WeChat-style bubble (left, name above) ──
+  const openSenderPanel = () => { setSelectedAgentName(message.senderName); openMobileDetail(); };
   return (
     <div className="flex gap-2 py-1 group">
-      <AgentAvatar name={message.senderName} size={36} square className="shrink-0" />
+      {agent ? (
+        <button
+          type="button"
+          onClick={openSenderPanel}
+          className="shrink-0 rounded-md hover:ring-2 hover:ring-primary/40 transition-shadow"
+          title={`View ${message.senderName}'s messages`}
+        >
+          <AgentAvatar name={message.senderName} size={36} square />
+        </button>
+      ) : (
+        <AgentAvatar name={message.senderName} size={36} square className="shrink-0" />
+      )}
       <div className="flex flex-col min-w-0 max-w-[82%] items-start">
         <div className="flex items-center gap-1.5 mb-0.5 px-1">
           <span className="text-[11.5px] font-semibold text-foreground/80 truncate">
