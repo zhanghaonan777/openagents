@@ -43,6 +43,7 @@ from app.routers.network import (
     _resolve_workspace,
     _verify_workspace_access,
 )
+from app.services.liveness import is_live
 from openagents.core.onm_events import Event
 
 logger = logging.getLogger(__name__)
@@ -1275,6 +1276,111 @@ def nudge_task(
         except Exception:
             logger.exception("a2a: nudge failed for task %s", task.id)
     return _commit_review(db, task)
+
+
+def _ensure_kickoff_channel(db: Session, workspace, agent_name: str) -> str:
+    """Get-or-create the agent's private system→agent channel (used to hand it a
+    proactive turn). Mirrors _ensure_dm_channel but with the agent as sole member."""
+    name = f"kickoff:{agent_name}"
+    ch = db.execute(
+        select(Channel).where(Channel.workspace_id == str(workspace.id), Channel.name == name)
+    ).scalar_one_or_none()
+    if ch is None:
+        ch = Channel(
+            workspace_id=str(workspace.id),
+            name=name,
+            title=f"System → {agent_name}",
+            created_by="system",
+            status="active",
+        )
+        db.add(ch)
+        db.flush()
+    have = set(db.execute(
+        select(ChannelMember.agent_name).where(ChannelMember.channel_id == ch.id)
+    ).scalars().all())
+    if agent_name not in have:
+        db.add(ChannelMember(channel_id=ch.id, agent_name=agent_name))
+        db.flush()
+    return name
+
+
+class KickoffRequest(BaseModel):
+    network: str
+    focus: Optional[str] = None        # optional human steer for this check-in
+
+
+@router.post("/agents/{agent_name}/kickoff")
+def kickoff_agent(
+    agent_name: str,
+    body: KickoffRequest,
+    db: Session = Depends(get_db),
+    x_workspace_token: Optional[str] = Header(None),
+    authorization: Optional[str] = Header(None),
+):
+    """Give a live agent a *proactive* turn. Hands it a digest of its open work and
+    asks it to reach out to teammates on its own initiative (DM / consult / @mention)
+    rather than wait to be addressed. The trigger message is private to the agent (a
+    system→agent channel); the conversations it then starts are the visible output.
+    """
+    workspace = _resolve_workspace(db, body.network)
+    if not workspace:
+        return json_response(ResponseCode.NOT_FOUND, "Network not found")
+    if not _verify_workspace_access(workspace, x_workspace_token, authorization):
+        return json_response(ResponseCode.UNAUTHORIZED, "Invalid credentials")
+
+    member = db.execute(
+        select(WorkspaceMember).where(
+            WorkspaceMember.workspace_id == workspace.id,
+            WorkspaceMember.agent_name == agent_name,
+        )
+    ).scalar_one_or_none()
+    if not member:
+        return json_response(ResponseCode.NOT_FOUND, "Agent not found")
+    if not is_live(member, _now()):
+        return json_response(ResponseCode.BAD_REQUEST, "Agent is offline; bring it online first")
+
+    # Digest of the agent's open assignments (non-terminal tasks it owns).
+    open_tasks = db.execute(
+        select(TaskRecord).where(
+            TaskRecord.workspace_id == str(workspace.id),
+            TaskRecord.contractor == _agent_address(agent_name),
+            TaskRecord.state.notin_(TERMINAL_STATES),
+        ).order_by(TaskRecord.created_at.asc())
+    ).scalars().all()
+    lines = [
+        f"- [{_WIRE_STATE.get(t.state, t.state)}] "
+        f"{(((t.input or {}).get('parts') or [{}])[0].get('text') or '')[:120]}"
+        for t in open_tasks
+    ]
+    digest = "\n".join(lines) if lines else "(no open tasks assigned to you right now)"
+
+    instruction = (
+        f"[Proactive check-in] You are {agent_name}. Review your current work and, if "
+        f"you need anything from a teammate, reach out to them yourself — send a direct "
+        f"message, consult them, or @mention them. Don't wait to be asked. If nothing "
+        f"needs coordination right now, briefly say so and stop.\n\n"
+        f"Your open tasks:\n{digest}"
+    )
+    focus = (body.focus or "").strip()
+    if focus:
+        instruction += f"\n\nFocus for this check-in: {focus}"
+
+    channel_name = _ensure_kickoff_channel(db, workspace, agent_name)
+    try:
+        event = Event(
+            type="workspace.message.posted",
+            source="system:kickoff",
+            target=f"channel/{channel_name}",
+            payload={"content": instruction, "message_type": "chat"},
+            metadata={"target_agents": [agent_name], "kickoff": True},
+        )
+        _emit_event_blocking(event, workspace, db, token=workspace.password_hash)
+    except Exception:
+        logger.exception("a2a: kickoff failed for agent %s", agent_name)
+        return json_response(ResponseCode.INTERNAL_ERROR, "Failed to kick off agent")
+
+    db.commit()
+    return success_response({"kicked": True, "agent": agent_name, "openTasks": len(open_tasks)})
 
 
 @router.post("/tasks/{task_id}/clarification")

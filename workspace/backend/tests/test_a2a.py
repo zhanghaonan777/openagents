@@ -1020,3 +1020,49 @@ def test_consult_skips_intermediate_status_message(client, workspace, db):
     d = r.json()["data"]
     assert d["answered"] is True, d
     assert "60/min" in d["answer"]
+
+
+# ---------------------------------------------------------------------------
+# Proactive kickoff — give a live agent a self-directed turn
+# ---------------------------------------------------------------------------
+
+def _kickoff_events(db, ws, agent):
+    from sqlalchemy import select
+    from app.models import EventRecord
+    return db.execute(
+        select(EventRecord).where(
+            EventRecord.network_id == ws["id"],
+            EventRecord.type == "workspace.message.posted",
+            EventRecord.target == f"channel/kickoff:{agent}",
+        )
+    ).scalars().all()
+
+
+def test_kickoff_targets_a_live_agent(client, workspace, db):
+    _join(client, workspace, "frontend")
+    r = client.post("/v1/a2a/agents/frontend/kickoff", json={"network": workspace["id"]}, headers=_hdr(workspace))
+    assert r.status_code == 200, r.text
+    d = r.json()["data"]
+    assert d["kicked"] is True and d["agent"] == "frontend"
+    # A directed kickoff message landed in the agent's private system channel,
+    # targeting only that agent (so it bypasses the LLM router like a routine).
+    ev = _kickoff_events(db, workspace, "frontend")
+    assert ev, "kickoff message not posted"
+    assert ev[-1].source == "system:kickoff"
+    assert (ev[-1].metadata_ or {}).get("target_agents") == ["frontend"]
+
+
+def test_kickoff_unknown_agent_404(client, workspace):
+    r = client.post("/v1/a2a/agents/ghost/kickoff", json={"network": workspace["id"]}, headers=_hdr(workspace))
+    assert r.status_code == 404
+
+
+def test_kickoff_digest_lists_open_tasks(client, workspace, db):
+    _join(client, workspace, "pm")
+    _join(client, workspace, "coder")
+    _delegate(client, workspace, contractor="coder", text="Build the login form")
+    r = client.post("/v1/a2a/agents/coder/kickoff", json={"network": workspace["id"]}, headers=_hdr(workspace))
+    assert r.status_code == 200, r.text
+    assert r.json()["data"]["openTasks"] >= 1
+    ev = _kickoff_events(db, workspace, "coder")
+    assert any("Build the login form" in (e.payload or {}).get("content", "") for e in ev)

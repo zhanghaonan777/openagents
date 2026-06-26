@@ -1025,6 +1025,15 @@ class WorkspaceApi {
     });
   }
 
+  /** Give a live agent a proactive turn — it reviews its open work and reaches
+   *  out to teammates on its own initiative. */
+  async kickoffAgent(agentName: string, p?: { focus?: string }): Promise<{ kicked: boolean; agent: string; openTasks: number }> {
+    return this.request(`/v1/a2a/agents/${encodeURIComponent(agentName)}/kickoff`, {
+      method: 'POST',
+      body: JSON.stringify({ network: this.workspaceId, focus: p?.focus }),
+    });
+  }
+
   async setA2AClarification(taskId: string, p: { action: 'set' | 'resolve'; question?: string; answer?: string }): Promise<import('./types').A2ATask> {
     return this.request(`/v1/a2a/tasks/${taskId}/clarification`, {
       method: 'POST',

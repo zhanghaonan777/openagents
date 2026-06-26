@@ -87,7 +87,8 @@ export function AgentProfilePanel() {
           participants: t.participants, lastText: t.lastText, lastFrom: t.lastFrom, lastAt: t.lastAt,
         }));
       const chanConvos: ChatConvo[] = channels
-        .filter((c) => !c.address.startsWith('dm-') && c.participants.includes(selectedAgentName))
+        // exclude the DM lane (shown above) and private system lanes (kickoff/routine plumbing)
+        .filter((c) => !/^(dm-|kickoff:|routines:)/.test(c.address) && c.participants.includes(selectedAgentName))
         .map((c) => ({
           channel: c.address, kind: 'channel',
           title: c.title || c.participants.filter((p) => p !== selectedAgentName).join(', ') || c.address,
@@ -264,6 +265,20 @@ export function AgentProfilePanel() {
     setViewMode('threads');
   }, [agent, createSession, setSelectedAgentName, setViewMode]);
 
+  const [kicking, setKicking] = useState(false);
+  const kickoff = useCallback(async () => {
+    if (!agent || kicking) return;
+    setKicking(true);
+    try {
+      const r = await workspaceApi.kickoffAgent(agent.agentName);
+      toast.success(`Nudged ${agent.agentName} to coordinate — reviewing ${r.openTasks} open task${r.openTasks === 1 ? '' : 's'}`);
+    } catch {
+      toast.error('Could not kick off this agent');
+    } finally {
+      setKicking(false);
+    }
+  }, [agent, kicking]);
+
   if (!agent) return null;
 
   const isOnline = agent.status === 'online';
@@ -307,6 +322,16 @@ export function AgentProfilePanel() {
               </span>
             </div>
           </div>
+          {isOnline && (
+            <button
+              onClick={kickoff}
+              disabled={kicking}
+              className="inline-flex items-center gap-1 h-7 px-2 rounded-md border border-amber-400/60 bg-amber-500/10 text-amber-700 dark:text-amber-300 text-[11px] font-medium hover:bg-amber-500/20 transition-colors disabled:opacity-50 shrink-0"
+              title="Give this agent a proactive turn — it reviews its open work and reaches out to teammates on its own"
+            >
+              <Sparkles className="size-3.5" /> {kicking ? 'Kicking…' : 'Kick off'}
+            </button>
+          )}
           <button
             onClick={() => setSelectedAgentName(null)}
             className="size-7 flex items-center justify-center rounded-md hover:bg-zinc-200/60 dark:hover:bg-zinc-800 text-muted-foreground transition-colors shrink-0"
