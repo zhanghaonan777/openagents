@@ -724,19 +724,3 @@ def find_skill(skill_id: str) -> Optional[dict]:
 def get_skill_defaults() -> Dict[str, bool]:
     """Return ``{module: True}`` for all workspace modules (backward compat)."""
     return {m: True for m in _WORKSPACE_MODULES}
-
-
-def skills_to_disabled_modules(enabled_skills: Optional[Dict[str, bool]]) -> Set[str]:
-    """Convert a per-agent ``enabled_skills`` JSONB dict to a ``disabledModules`` Set.
-
-    Only processes workspace module keys (files, browser, etc.), not third-party skills.
-    ``None`` (no overrides) -> empty set (everything enabled).
-    """
-    if not enabled_skills:
-        return set()
-
-    disabled: Set[str] = set()
-    for module in _WORKSPACE_MODULES:
-        if enabled_skills.get(module) is False:
-            disabled.add(module)
-    return disabled

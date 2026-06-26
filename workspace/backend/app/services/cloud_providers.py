@@ -242,10 +242,6 @@ PROVIDERS: dict[str, ProviderInfo] = {
 }
 
 
-def get_provider(name: str) -> Optional[ProviderInfo]:
-    return PROVIDERS.get(name)
-
-
 def validate_provider_model(provider: str, model: str) -> Optional[ModelInfo]:
     if provider == "custom":
         return ModelInfo(model, "chat", model)

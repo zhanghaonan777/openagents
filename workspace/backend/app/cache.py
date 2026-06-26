@@ -18,7 +18,7 @@ import asyncio
 import json
 import logging
 import os
-from typing import Any, AsyncGenerator, Callable, Optional
+from typing import AsyncGenerator, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -86,36 +86,6 @@ def delete_key(key: str) -> None:
         c.delete(key)
     except Exception as e:
         logger.debug("Redis DELETE failed for %s: %s", key, e)
-
-
-def json_read_through(
-    key: str,
-    ttl_seconds: float,
-    compute: Callable[[], Any],
-) -> Any:
-    """Read-through JSON cache.
-
-    Returns the cached JSON value for ``key`` if present; otherwise calls
-    ``compute()``, caches its result for ``ttl_seconds``, and returns it.
-
-    ``compute`` must return a JSON-serializable object. Any exception from
-    ``compute`` propagates unchanged (we never cache errors).
-    """
-    raw = get_bytes(key)
-    if raw is not None:
-        try:
-            return json.loads(raw)
-        except Exception:
-            # Corrupt entry — fall through to recompute and overwrite
-            pass
-
-    value = compute()
-    try:
-        set_bytes(key, json.dumps(value, separators=(",", ":")).encode("utf-8"), ttl_seconds)
-    except (TypeError, ValueError) as e:
-        # Not JSON-serializable — skip caching but still return the value
-        logger.debug("Skip cache for %s (not JSON-serializable): %s", key, e)
-    return value
 
 
 # ---------------------------------------------------------------------------

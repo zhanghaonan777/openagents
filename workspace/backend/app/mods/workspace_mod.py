@@ -490,16 +490,6 @@ def _extract_mentions(content: str, known_agents: List[str]) -> List[str]:
     return [m for m in raw_mentions if m in known_set]
 
 
-def _extract_leading_mention(content: str, known_agents: List[str]) -> Optional[str]:
-    """Return the agent name if the message starts with @agent-name, else None."""
-    if not content or not known_agents:
-        return None
-    m = re.match(r"^\s*@([\w-]+)", content)
-    if m and m.group(1) in set(known_agents):
-        return m.group(1)
-    return None
-
-
 def _fallback_targets(event, channel, mentions: List[str], live: Optional[set] = None) -> List[str]:
     """Determine target agents when LLM router is unavailable.
 

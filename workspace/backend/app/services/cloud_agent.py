@@ -24,12 +24,6 @@ from app.services.cloud_providers import audio_generation, chat_completion, imag
 logger = logging.getLogger(__name__)
 
 
-def _mask_key(key: str) -> str:
-    if len(key) <= 8:
-        return "****"
-    return key[:4] + "..." + key[-4:]
-
-
 async def invoke_cloud_agents(workspace_id: str, event_data: dict) -> None:
     """Background task: invoke any cloud agents targeted by a message event."""
     metadata = event_data.get("metadata") or {}
