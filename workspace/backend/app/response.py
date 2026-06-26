@@ -4,7 +4,7 @@ Response helpers for the workspace API.
 """
 
 from enum import IntEnum
-from typing import Any, Optional
+from typing import Any
 
 from fastapi.responses import JSONResponse
 
@@ -28,10 +28,9 @@ def json_response(
     code: ResponseCode,
     message: str,
     data: Any = None,
-    status_code: Optional[int] = None,
 ) -> JSONResponse:
     """Return a JSON response with a specific code."""
-    http_status = status_code or (200 if code == ResponseCode.SUCCESS else int(code))
+    http_status = 200 if code == ResponseCode.SUCCESS else int(code)
     return JSONResponse(
         status_code=http_status,
         content={"code": int(code), "message": message, "data": data},

@@ -49,9 +49,6 @@ class BrowserManager:
     def is_cloud(self) -> bool:
         return bool(BROWSERFABRIC_API_KEY)
 
-    def is_cloud_for(self, api_key: str = None) -> bool:
-        return bool(api_key or BROWSERFABRIC_API_KEY)
-
     # ------------------------------------------------------------------
     # Browser Fabric REST helpers
     # ------------------------------------------------------------------

@@ -1,25 +1,3 @@
-export function uid(): string {
-  return (Date.now() + Math.floor(Math.random() * 1000)).toString();
-}
-
-export function getInitials(
-  name: string | null | undefined,
-  count?: number,
-): string {
-  if (!name || typeof name !== 'string') {
-    return '';
-  }
-
-  const initials = name
-    .split(' ')
-    .filter(Boolean)
-    .map((part) => part[0].toUpperCase());
-
-  return count && count > 0
-    ? initials.slice(0, count).join('')
-    : initials.join('');
-}
-
 /** Compact relative time ("just now", "5m ago", "2h ago", "3d ago") for dense
  *  UI like task cards and the activity timeline. Empty string for null. */
 export function timeAgoShort(date: Date | string | null | undefined): string {
@@ -87,7 +65,7 @@ const AGENT_COLORS = [
   { bg: 'bg-rose-50 dark:bg-rose-950/30', text: 'text-rose-700 dark:text-rose-300', initials: 'bg-rose-500', border: 'border-rose-200 dark:border-rose-800' },
 ];
 
-export type AgentColor = typeof AGENT_COLORS[0];
+type AgentColor = typeof AGENT_COLORS[0];
 
 export function getAgentColor(agentName: string, allAgentNames: string[]): AgentColor {
   const index = allAgentNames.indexOf(agentName);

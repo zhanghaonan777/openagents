@@ -11,7 +11,7 @@ TTL_SECONDS = 30.0
 _KEY_PREFIX = "composing:"
 
 
-def set_composing(workspace_id: str, channel: str) -> None:
+def set_composing(workspace_id: str) -> None:
     cache.set_bytes(f"{_KEY_PREFIX}{workspace_id}", b"1", TTL_SECONDS)
 
 

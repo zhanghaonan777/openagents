@@ -334,7 +334,7 @@ def composing_signal(
         return json_response(ResponseCode.UNAUTHORIZED, "Invalid credentials")
 
     from app.composing import set_composing
-    set_composing(str(workspace.id), body.channel)
+    set_composing(str(workspace.id))
     return success_response({"status": "ok"})
 
 

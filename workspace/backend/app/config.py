@@ -17,9 +17,6 @@ class Config:
         "postgresql://postgres:dev@localhost:5432/openagents_workspace",
     )
 
-    # Auth mode: "workspace_token" (self-hosted) or "firebase" (hosted)
-    AUTH_MODE: str = os.environ.get("AUTH_MODE", "workspace_token")
-
     # Firebase (used for user login on workspace.openagents.org)
     FIREBASE_PROJECT_ID: str = os.environ.get("FIREBASE_PROJECT_ID", "openagentsweb")
 
@@ -39,9 +36,6 @@ class Config:
     # "sandbox" for TestFlight / dev builds, "production" for App Store.
     # One Apple key works for both; this picks which APNs host to hit.
     APNS_ENVIRONMENT: str = os.environ.get("APNS_ENVIRONMENT", "production")
-
-    # Identity mode: "standalone" (own agent table) or "shared" (external agent_ids)
-    IDENTITY_MODE: str = os.environ.get("IDENTITY_MODE", "standalone")
 
     # Agent offline timeout in seconds
     AGENT_TIMEOUT_SECONDS: int = int(os.environ.get("AGENT_TIMEOUT_SECONDS", "60"))

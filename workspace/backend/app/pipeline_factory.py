@@ -14,14 +14,10 @@ from app.mods.workspace_mod import WorkspaceMod
 from app.mods.persistence import PersistenceMod
 
 
-def create_workspace_pipeline() -> Pipeline:
-    """Create the standard workspace pipeline: auth → workspace → persistence."""
-    return Pipeline(mods=[
-        AuthMod(),           # guard,     priority 0
-        WorkspaceMod(),      # transform, priority 50
-        PersistenceMod(),    # observe,   priority 90
-    ])
-
-
-# Singleton pipeline — created once, reused across requests
-pipeline = create_workspace_pipeline()
+# Singleton pipeline — created once at startup, reused across requests:
+# auth → workspace → persistence.
+pipeline = Pipeline(mods=[
+    AuthMod(),           # guard,     priority 0
+    WorkspaceMod(),      # transform, priority 50
+    PersistenceMod(),    # observe,   priority 90
+])

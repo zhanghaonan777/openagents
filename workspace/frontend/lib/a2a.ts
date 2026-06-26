@@ -32,7 +32,6 @@ export function taskStatusMeta(s: A2ATaskState): { label: string; cls: string; d
 // this marker; the backend produces it (DELEGATION_MARKER in routers/a2a.py) and
 // the chat + activity views strip it from human-facing display. Cross-stack
 // contract — keep in sync with the backend constant.
-export const A2A_DELEGATION_MARKER = '[A2A delegation';
 const DELEGATION_SPLIT = /\n*\[A2A delegation/;
 
 /** Hide the internal A2A kick-off plumbing from displayed message content. */

@@ -290,8 +290,8 @@ async def _refresh_google_token(refresh_token: str) -> str:
         return r.json()["access_token"]
 
 
-def _make_client(api_key: str, provider: str, base_url_override: Optional[str] = None, timeout: float = 120) -> AsyncOpenAI:
-    kwargs: dict = {"api_key": api_key, "timeout": timeout}
+def _make_client(api_key: str, provider: str, base_url_override: Optional[str] = None) -> AsyncOpenAI:
+    kwargs: dict = {"api_key": api_key, "timeout": 120}
     if base_url_override:
         base_url = base_url_override.rstrip("/")
         if not base_url.endswith("/v1"):

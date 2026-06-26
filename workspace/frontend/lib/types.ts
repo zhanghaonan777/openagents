@@ -28,13 +28,6 @@ export interface WorkspaceAgent {
 
 /** Per-skill install status stored under enabledSkills.skill_status[skillId]. */
 export type SkillState = 'installing' | 'installed' | 'failed' | 'uninstalled';
-export interface SkillStatusEntry {
-  state: SkillState;
-  updated_at?: number;
-  path?: string;
-  error?: string;
-}
-
 export interface SkillCatalogEntry {
   id: string;
   name: string;
@@ -177,14 +170,6 @@ export interface SharedSnapshotMessage {
   sender_type: string;
   content: string;
   created_at: string | null;
-}
-
-export interface SharedSnapshot {
-  id: string;
-  title: string | null;
-  messages: SharedSnapshotMessage[];
-  messageCount: number;
-  createdAt: string | null;
 }
 
 export interface ShareSummary {
@@ -497,11 +482,6 @@ export interface PaginationMeta {
   total_pages: number | null;
   has_next: boolean;
   has_prev: boolean;
-}
-
-export interface PaginatedResponse<T> {
-  items: T[];
-  pagination: PaginationMeta;
 }
 
 export interface MessagePollResponse {

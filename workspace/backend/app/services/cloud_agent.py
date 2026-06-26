@@ -78,9 +78,6 @@ async def _invoke_single(
     cloud_config: CloudAgentConfig, depth: int,
 ) -> None:
     """Invoke a single cloud agent and post the response."""
-    channel_target = event_data.get("target", "")
-    agent_name = cloud_config.agent_name
-
     if cloud_config.category == "image":
         await _invoke_image_agent(db, workspace_id, event_data, cloud_config)
     elif cloud_config.category == "audio":
