@@ -32,6 +32,7 @@ from typing import List, Optional
 from fastapi import APIRouter, Depends, Header, Query
 from pydantic import BaseModel
 from sqlalchemy import select
+from sqlalchemy.exc import PendingRollbackError
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.exc import StaleDataError
 
@@ -682,7 +683,7 @@ def create_task(
         text=body.text,
         skill_id=body.skill_id,
         context_id=context_id,
-        token=x_workspace_token,
+        token=workspace.password_hash,
     )
 
     # Blocking ("delegate and wait"): long-poll until the contractor drives the
@@ -778,7 +779,7 @@ def _derive_agenda(db: Session, workspace_id: str, agent_name: str) -> list[dict
                 "reason": "review_assigned",
                 "state": _WIRE_STATE.get(t.state, t.state),
                 "contractorName": _agent_name(t.contractor),
-                "request": (t.input or {}).get("parts", [{}])[0].get("text") if t.input else None,
+                "request": ((t.input or {}).get("parts") or [{}])[0].get("text") if t.input else None,
             })
             continue
         # Work duty: this agent is the contractor and the task isn't finished.
@@ -800,7 +801,7 @@ def _derive_agenda(db: Session, workspace_id: str, agent_name: str) -> list[dict
                 "reason": "changes_requested" if priority == "rework" else "owner_assigned",
                 "state": _WIRE_STATE.get(t.state, t.state),
                 "contractorName": _agent_name(t.contractor),
-                "request": (t.input or {}).get("parts", [{}])[0].get("text") if t.input else None,
+                "request": ((t.input or {}).get("parts") or [{}])[0].get("text") if t.input else None,
             })
     items.sort(key=lambda it: (_AGENDA_RANK.get(it["priority"], 9), it["taskId"]))
     return items
@@ -839,7 +840,13 @@ def _load_task(db: Session, workspace_id: str, task_id: str) -> Optional[TaskRec
     ).scalar_one_or_none()
 
 
-def _resolve_task_ctx(db, network, token, authorization, task_id):
+def _resolve_task_ctx(
+    db: Session,
+    network: Optional[str],
+    token: Optional[str],
+    authorization: Optional[str],
+    task_id: str,
+):
     """Resolve (workspace, task) with the standard auth + not-found guards.
 
     Returns ``(workspace, task, error)``. On failure ``error`` is a ready-to-
@@ -949,10 +956,18 @@ def cancel_task(
 # task_metadata (see _set_review) and never mutates the A2A protocol state, so
 # it's safe on tasks at any point in their lifecycle.
 
-def _commit_review(db: Session, task: TaskRecord):
+def _commit_task(db: Session, task: TaskRecord):
+    """Durably commit a task mutation and return the serialized task.
+
+    Catches both StaleDataError (the optimistic-lock version CAS lost to a
+    concurrent writer) and PendingRollbackError (a best-effort side-effect emit
+    earlier in the request hit a version conflict on its own internal commit and
+    left the session needing a rollback) — either way the right answer is the
+    same: roll back and tell the caller to retry, rather than 500.
+    """
     try:
         db.commit()
-    except StaleDataError:
+    except (StaleDataError, PendingRollbackError):
         db.rollback()
         return json_response(ResponseCode.CONFLICT, "Task was modified concurrently; retry")
     db.refresh(task)
@@ -1014,11 +1029,11 @@ def request_review(
                 },
                 metadata={"taskId": task.id, "review": "requested"},
             )
-            _emit_event_blocking(event, workspace, db, token=x_workspace_token)
+            _emit_event_blocking(event, workspace, db, token=workspace.password_hash)
         except Exception:
             logger.exception("a2a: review-request nudge failed for task %s", task.id)
 
-    return _commit_review(db, task)
+    return _commit_task(db, task)
 
 
 @router.post("/tasks/{task_id}/review/approve")
@@ -1046,7 +1061,7 @@ def approve_review(
     )
     _append_event(task, "review_approved", actor=body.reviewer or review.get("reviewer"))
     task.history = list(task.history or []) + [_message("user", "Review approved.")]
-    return _commit_review(db, task)
+    return _commit_task(db, task)
 
 
 @router.post("/tasks/{task_id}/review/request-changes")
@@ -1094,11 +1109,11 @@ def request_changes(
                 },
                 metadata={"taskId": task.id, "review": "changes_requested"},
             )
-            _emit_event_blocking(event, workspace, db, token=x_workspace_token)
+            _emit_event_blocking(event, workspace, db, token=workspace.password_hash)
         except Exception:
             logger.exception("a2a: request-changes nudge failed for task %s", task.id)
 
-    return _commit_review(db, task)
+    return _commit_task(db, task)
 
 
 # ---------------------------------------------------------------------------
@@ -1237,10 +1252,10 @@ def reassign_task(
                 payload={"content": build_delegation_kickoff(new_name, req_text, task.id), "message_type": "delegate"},
                 metadata={"taskId": task.id},
             )
-            _emit_event_blocking(event, workspace, db, token=x_workspace_token)
+            _emit_event_blocking(event, workspace, db, token=workspace.password_hash)
         except Exception:
             logger.exception("a2a: reassign kick-off failed for task %s", task.id)
-    return _commit_review(db, task)
+    return _commit_task(db, task)
 
 
 @router.post("/tasks/{task_id}/nudge")
@@ -1272,10 +1287,10 @@ def nudge_task(
                 payload={"content": f"@{contractor_name} {text}", "message_type": "chat"},
                 metadata={"taskId": task.id, "nudge": True},
             )
-            _emit_event_blocking(event, workspace, db, token=x_workspace_token)
+            _emit_event_blocking(event, workspace, db, token=workspace.password_hash)
         except Exception:
             logger.exception("a2a: nudge failed for task %s", task.id)
-    return _commit_review(db, task)
+    return _commit_task(db, task)
 
 
 def _ensure_kickoff_channel(db: Session, workspace, agent_name: str) -> str:
@@ -1430,7 +1445,7 @@ def set_clarification(
                         payload={"content": f"@{_agent_name(task.contractor)} (clarification) {body.answer}", "message_type": "chat"},
                         metadata={"taskId": task.id},
                     )
-                    _emit_event_blocking(event, workspace, db, token=x_workspace_token)
+                    _emit_event_blocking(event, workspace, db, token=workspace.password_hash)
                 except Exception:
                     logger.exception("a2a: clarification answer relay failed for task %s", task.id)
         task.history = list(task.history or []) + [_message("user", "Clarification resolved.")]
@@ -1442,7 +1457,7 @@ def set_clarification(
     else:
         _append_event(task, "clarification_resolved", actor=body.actor, detail=body.answer)
     task.updated_at = _now()
-    return _commit_review(db, task)
+    return _commit_task(db, task)
 
 
 # ---------------------------------------------------------------------------
@@ -1489,7 +1504,7 @@ def create_subtask(
         skill_id=body.skill_id,
         context_id=parent.context_id,
         parent_id=parent.id,
-        token=x_workspace_token,
+        token=workspace.password_hash,
     )
 
     # Record the fan-out on the parent's timeline (best-effort — the child is
@@ -1533,7 +1548,7 @@ def soft_delete_task(
         task.task_metadata = meta
         _append_event(task, "deleted", actor=body.actor)
         task.updated_at = _now()
-    return _commit_review(db, task)
+    return _commit_task(db, task)
 
 
 @router.post("/tasks/{task_id}/restore")
@@ -1555,7 +1570,7 @@ def restore_task(
         task.task_metadata = meta
         _append_event(task, "restored", actor=body.actor)
         task.updated_at = _now()
-    return _commit_review(db, task)
+    return _commit_task(db, task)
 
 
 # ---------------------------------------------------------------------------
@@ -1658,7 +1673,7 @@ def send_peer_message(
             payload={"content": content, "message_type": "peer"},
             metadata={"peer": {"from": from_name, "to": to_name, "expectsReply": body.expects_reply}},
         )
-        _emit_event_blocking(event, workspace, db, token=x_workspace_token)
+        _emit_event_blocking(event, workspace, db, token=workspace.password_hash)
     except Exception:
         logger.exception("a2a: peer message delivery failed (%s → %s)", from_name, to_name)
         return json_response(ResponseCode.BAD_REQUEST, "Failed to deliver message")
@@ -1798,7 +1813,7 @@ def consult_teammate(
             payload={"content": f"@{to_name} {question}  · please answer concisely.", "message_type": "peer"},
             metadata={"peer": {"from": from_name, "to": to_name, "consult": True}},
         )
-        _emit_event_blocking(event, workspace, db, token=x_workspace_token)
+        _emit_event_blocking(event, workspace, db, token=workspace.password_hash)
     except Exception:
         logger.exception("a2a: consult question delivery failed (%s → %s)", from_name, to_name)
         return json_response(ResponseCode.BAD_REQUEST, "Failed to deliver question")
@@ -1813,34 +1828,39 @@ def consult_teammate(
     started = time.time()
     deadline = started + min(max(body.wait, 1), MAX_WAIT_SECONDS)
     logger.info("a2a consult: %s → %s asking (channel=%s, wait=%ss)", from_name, to_name, channel, body.wait)
+    seen_ids: set[str] = set()
     while time.time() < deadline:
         db.close()                # release the pooled connection while we wait
         time.sleep(3)
-        # Earliest message from `to` after the watermark. The teammate often
-        # posts an intermediate "thinking"/status before the real answer, so on
-        # those we ADVANCE the watermark past them — otherwise the ascending
-        # `.first()` keeps returning the same status message and never reaches
-        # the chat reply (the bug where the teammate answered but consult still
-        # timed out).
-        reply = db.execute(
-            select(EventRecord).where(
-                EventRecord.network_id == ws_id,
-                EventRecord.target == channel_target,
-                EventRecord.type == "workspace.message.posted",
-                EventRecord.source == to_addr,
-                EventRecord.timestamp > asked_at_ms,
-            ).order_by(EventRecord.timestamp.asc())
-        ).scalars().first()
+        # Earliest unseen message from `to` at/after the watermark. The teammate
+        # often posts an intermediate "thinking"/status (or an empty/mention-only
+        # line) before the real answer; we skip those, remembering their ids and
+        # advancing the watermark, so the ascending `.first()` keeps moving toward
+        # the chat reply instead of getting stuck. We use `>=` + the seen-id set
+        # (not strict `>`) so a genuine answer sharing a millisecond with a skipped
+        # message isn't silently excluded.
+        q = select(EventRecord).where(
+            EventRecord.network_id == ws_id,
+            EventRecord.target == channel_target,
+            EventRecord.type == "workspace.message.posted",
+            EventRecord.source == to_addr,
+            EventRecord.timestamp >= asked_at_ms,
+        )
+        if seen_ids:
+            q = q.where(EventRecord.id.notin_(seen_ids))
+        reply = db.execute(q.order_by(EventRecord.timestamp.asc())).scalars().first()
         if reply is None:
             continue
-        if (reply.payload or {}).get("message_type") in ("thinking", "status", "todos"):
-            asked_at_ms = reply.timestamp     # step past the intermediate message
-            continue
+        message_type = (reply.payload or {}).get("message_type")
         text = _strip_leading_mention((reply.payload or {}).get("content") or "")
-        if text:
-            logger.info("a2a consult: %s → %s ANSWERED in %.0fs (%d chars)",
-                        from_name, to_name, time.time() - started, len(text))
-            return success_response({"answered": True, "from": to_name, "answer": text, "channel": channel})
+        if message_type in ("thinking", "status", "todos") or not text:
+            # Intermediate or empty — step past it and don't reconsider it.
+            asked_at_ms = reply.timestamp
+            seen_ids.add(reply.id)
+            continue
+        logger.info("a2a consult: %s → %s ANSWERED in %.0fs (%d chars)",
+                    from_name, to_name, time.time() - started, len(text))
+        return success_response({"answered": True, "from": to_name, "answer": text, "channel": channel})
 
     logger.info("a2a consult: %s → %s TIMED OUT after %ss (no reply)", from_name, to_name, body.wait)
     return success_response({
