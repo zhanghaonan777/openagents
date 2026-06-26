@@ -37,15 +37,32 @@ interface ApiEnvelope<T> {
   data: T;
 }
 
-async function request<T>(cfg: A2AConfig, method: string, path: string, body?: unknown): Promise<T> {
-  const res = await fetch(`${cfg.baseUrl}${path}`, {
-    method,
-    headers: {
-      'X-Workspace-Token': cfg.token,
-      'Content-Type': 'application/json',
-    },
-    body: body === undefined ? undefined : JSON.stringify(body),
-  });
+async function request<T>(
+  cfg: A2AConfig,
+  method: string,
+  path: string,
+  body?: unknown,
+  timeoutMs = 30_000,
+): Promise<T> {
+  // Bound every call so a half-open connection to the gateway can't hang the
+  // MCP tool (and the agent) forever. Long-pollers (consult) pass a larger value.
+  let res: Response;
+  try {
+    res = await fetch(`${cfg.baseUrl}${path}`, {
+      method,
+      headers: {
+        'X-Workspace-Token': cfg.token,
+        'Content-Type': 'application/json',
+      },
+      body: body === undefined ? undefined : JSON.stringify(body),
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+  } catch (e) {
+    if (e instanceof Error && e.name === 'TimeoutError') {
+      throw new Error(`A2A ${method} ${path} → timed out after ${timeoutMs}ms`);
+    }
+    throw new Error(`A2A ${method} ${path} → network error: ${e instanceof Error ? e.message : String(e)}`);
+  }
   let json: ApiEnvelope<T>;
   try {
     json = (await res.json()) as ApiEnvelope<T>;
@@ -98,13 +115,14 @@ export function consult(
   cfg: A2AConfig,
   p: { to: string; question: string; wait?: number },
 ): Promise<{ answered: boolean; from: string; answer: string | null; note?: string }> {
+  const wait = p.wait ?? 75;
   return request(cfg, 'POST', '/v1/a2a/consult', {
     network: cfg.network,
     source: selfAddress(cfg),
     to: p.to,
     question: p.question,
-    wait: p.wait ?? 75,
-  });
+    wait,
+  }, wait * 1000 + 10_000);   // outlast the server-side long-poll before aborting
 }
 
 export function sendPeerMessage(
