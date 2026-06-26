@@ -14,8 +14,11 @@ export interface ParsedStep {
 
 /** Strip MCP namespace prefixes from a tool name (mcp__server__tool → tool). */
 export function cleanToolName(name: string): string {
-  const mcpMatch = name.match(/^mcp__[^_]+__(.+)$/);
-  if (mcpMatch) return mcpMatch[1];
+  // Non-greedy server capture: server names can contain single underscores
+  // (e.g. mcp__plugin_claude-mem_mcp-search__search), so match up to the first
+  // "__" delimiter rather than the first underscore.
+  const mcpMatch = name.match(/^mcp__(.+?)__(.+)$/);
+  if (mcpMatch) return mcpMatch[2];
   const mcpMatch2 = name.match(/^mcp_[^_]+--.+?__(.+)$/);
   if (mcpMatch2) return mcpMatch2[1];
   return name;

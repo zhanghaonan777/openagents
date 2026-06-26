@@ -181,7 +181,7 @@ function ActivityIndicator() {
 function isTerminalStatus(step: WorkspaceMessage) {
   return (
     step.messageType === 'status' &&
-    /stopped|stopping failed/i.test(step.content)
+    /stopped|stopping failed|session restarted|restart failed/i.test(step.content)
   );
 }
 

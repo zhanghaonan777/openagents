@@ -352,7 +352,7 @@ export function WorkspaceProvider({
   }, [currentUser.id, currentUser.name]);
 
   const updateLastMessage = useCallback((sessionId: string, senderName: string, content: string, isStatus?: boolean) => {
-    if (!isStatus || /stopped|stopping failed/i.test(content)) {
+    if (!isStatus || /stopped|stopping failed|session restarted|restart failed/i.test(content)) {
       setStoppingSessionIds((prev) => {
         if (!prev.has(sessionId)) return prev;
         const next = new Set(prev);
@@ -582,7 +582,7 @@ export function WorkspaceProvider({
               const isStopping = stoppingSessionIdsRef.current.has(sid);
               if (info.isStatus) {
                 if (isStopping) {
-                  if (/stopped|stopping failed/i.test(info.content)) {
+                  if (/stopped|stopping failed|session restarted|restart failed/i.test(info.content)) {
                     setStoppingSessionIds((s) => {
                       if (!s.has(sid)) return s;
                       const next = new Set(s);

@@ -49,7 +49,7 @@ function groupKey(group: MessageGroup): string {
 function isTerminalStatus(msg: WorkspaceMessage) {
   return (
     msg.messageType === 'status' &&
-    /stopped|stopping failed/i.test(msg.content)
+    /stopped|stopping failed|session restarted|restart failed/i.test(msg.content)
   );
 }
 
