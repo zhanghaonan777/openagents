@@ -422,9 +422,21 @@ export function AgentProfilePanel() {
                         <p className="text-[12px] text-muted-foreground/60">No messages.</p>
                       ) : list.map((m) => {
                         const mine = m.from === selectedAgentName;
+                        const canJump = !mine && agents.some((a) => a.agentName === m.from);
                         return (
                           <div key={m.id} className={cn('flex gap-2 items-end', mine && 'flex-row-reverse')}>
-                            <AgentAvatar name={m.from} size={28} square className="shrink-0 mb-0.5" />
+                            {canJump ? (
+                              <button
+                                type="button"
+                                onClick={() => setSelectedAgentName(m.from)}
+                                className="shrink-0 mb-0.5 rounded hover:ring-2 hover:ring-primary/40 transition-shadow"
+                                title={`View ${m.from}'s messages`}
+                              >
+                                <AgentAvatar name={m.from} size={28} square />
+                              </button>
+                            ) : (
+                              <AgentAvatar name={m.from} size={28} square className="shrink-0 mb-0.5" />
+                            )}
                             <div className={cn('flex flex-col max-w-[68%]', mine ? 'items-end' : 'items-start')}>
                               {/* group chats: name the sender on incoming bubbles */}
                               {!mine && c.kind === 'channel' && <span className="text-[10px] text-muted-foreground/70 mb-0.5 px-0.5">{m.from}</span>}
