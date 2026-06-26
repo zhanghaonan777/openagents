@@ -8,7 +8,6 @@ import { AgentAvatar } from '@/components/agents/agent-avatar';
 import { timeAgoShort as timeAgo } from '@/lib/helpers';
 import { taskRequestText, taskStatusMeta } from '@/lib/a2a';
 import { TaskDetail } from '@/components/tasks/task-detail';
-import { AgentDms } from './agent-dms';
 import type { A2ATask, WorkspaceAgent } from '@/lib/types';
 
 const ACTIVE_STATES = ['submitted', 'working', 'input-required'];
@@ -206,8 +205,6 @@ export function TeamView() {
           )}
         </section>
 
-        {/* Agent ↔ agent direct messaging */}
-        <AgentDms />
       </div>
 
       {detailTask && (
