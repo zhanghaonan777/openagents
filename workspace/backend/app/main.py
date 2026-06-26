@@ -162,6 +162,10 @@ async def _fire_due():
                 await pipeline.process(event, ctx)
             except Exception:
                 logger.exception("Timer fire failed for %s", timer.id)
+            # Commit the 'fired' flag per timer — otherwise an exception later in
+            # this cycle rolls back the flag while the message already went out,
+            # and the timer fires again next cycle.
+            db.commit()
 
         # ── Fire due routines ──
         due_routines = db.execute(
@@ -179,8 +183,12 @@ async def _fire_due():
                 continue
             agent_name = routine.created_by.replace("openagents:", "")
 
-            # Skip if the agent hasn't responded to the previous fire yet
-            last_msg = db.execute(
+            # Skip if the agent hasn't responded to the previous fire yet. Look at
+            # the last *substantive* message — the agent emits intermediate
+            # thinking/status/todos while still working, and those must not be
+            # mistaken for a real reply (which would let the routine re-fire and
+            # pile up on a busy agent).
+            recent = db.execute(
                 select(EventRecord)
                 .where(
                     EventRecord.network_id == workspace.id,
@@ -188,9 +196,14 @@ async def _fire_due():
                     EventRecord.type == "workspace.message.posted",
                 )
                 .order_by(EventRecord.timestamp.desc())
-                .limit(1)
-            ).scalar_one_or_none()
-            if last_msg and last_msg.source == "system:routine":
+                .limit(10)
+            ).scalars().all()
+            last_real = next(
+                (m for m in recent
+                 if (m.payload or {}).get("message_type") not in ("thinking", "status", "todos")),
+                None,
+            )
+            if last_real and last_real.source == "system:routine":
                 # Previous fire still pending — skip, just advance schedule
                 routine.next_fires_at = _compute_next_fires_at(
                     routine.schedule_hour,
@@ -198,6 +211,7 @@ async def _fire_due():
                     routine.schedule_days,
                     routine.schedule_interval_minutes,
                 )
+                db.commit()
                 continue
 
             ctx = PipelineContext(
@@ -233,6 +247,9 @@ async def _fire_due():
                 routine.schedule_days,
                 routine.schedule_interval_minutes,
             )
+            # Commit per routine — a failure on a later routine must not roll back
+            # the schedule advance (and fired message) of earlier ones.
+            db.commit()
 
         db.commit()
     finally:

@@ -517,10 +517,12 @@ def _fallback_targets(event, channel, mentions: List[str], live: Optional[set] =
             if sender == channel.master_agent:
                 return []
         return [channel.master_agent]
-    # No (live) master — target the first live participant
+    # No (live) master — target the first live participant other than the sender
+    # (an agent must not be routed back to itself → self-trigger loop).
+    sender = event.source[len("openagents:"):] if event.source.startswith("openagents:") else None
     participants = [
         p.agent_name for p in (channel.participants or [])
-        if p.agent_name != "__no_response__"
+        if p.agent_name != "__no_response__" and p.agent_name != sender
     ]
     if live is not None:
         participants = [name for name in participants if name in live]
