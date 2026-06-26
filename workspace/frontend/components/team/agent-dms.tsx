@@ -147,8 +147,8 @@ export function AgentDms() {
                     ) : list.map((m) => {
                       const right = m.from === t.participants[1];
                       return (
-                        <div key={m.id} className={cn('flex gap-1.5 items-end', right && 'flex-row-reverse')}>
-                          <AgentAvatar name={m.from} size={20} className="shrink-0 mb-0.5" />
+                        <div key={m.id} className={cn('flex gap-1.5 items-start', right && 'flex-row-reverse')}>
+                          <AgentAvatar name={m.from} size={20} className="shrink-0 mt-0.5" />
                           <div className={cn('flex flex-col max-w-[78%]', right ? 'items-end' : 'items-start')}>
                             <div className="flex items-center gap-1 mb-0.5 px-0.5">
                               <span className="text-[10px] text-muted-foreground/70">{m.from}</span>

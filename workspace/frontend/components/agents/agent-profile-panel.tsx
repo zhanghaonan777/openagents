@@ -424,7 +424,9 @@ export function AgentProfilePanel() {
                         const mine = m.from === selectedAgentName;
                         const canJump = !mine && agents.some((a) => a.agentName === m.from);
                         return (
-                          <div key={m.id} className={cn('flex gap-2 items-end', mine && 'flex-row-reverse')}>
+                          // items-start: keep the avatar by the sender's name at the top of
+                          // the bubble (it used to sink to the bottom of tall messages).
+                          <div key={m.id} className={cn('flex gap-2 items-start', mine && 'flex-row-reverse')}>
                             {canJump ? (
                               <button
                                 type="button"

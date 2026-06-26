@@ -296,12 +296,12 @@ export const ChatMessage = memo(function ChatMessage({ message, agents = [] }: C
   // ── Agent message — WeChat-style bubble (left, name above) ──
   const openSenderPanel = () => { setSelectedAgentName(message.senderName); openMobileDetail(); };
   return (
-    <div className="flex gap-2 py-1 group">
+    <div className="flex gap-2 py-1 group items-start">
       {agent ? (
         <button
           type="button"
           onClick={openSenderPanel}
-          className="shrink-0 rounded-md hover:ring-2 hover:ring-primary/40 transition-shadow"
+          className="shrink-0 self-start rounded-md hover:ring-2 hover:ring-primary/40 transition-shadow"
           title={`View ${message.senderName}'s messages`}
         >
           <AgentAvatar name={message.senderName} size={36} square />
