@@ -177,6 +177,12 @@ def _alembic_shape() -> tuple[SchemaShape, str]:
                 name = _literal_arg(call, 0)
                 if name:
                     indexes.add(name)
+            elif _is_call(call, "op.create_unique_constraint"):
+                # A unique constraint can be added outside create_table too
+                # (op.create_unique_constraint("uq_...", "table", [...])).
+                name = _literal_arg(call, 0)
+                if name:
+                    unique_constraints.add(name)
 
     heads = revisions - down_revisions
     assert len(heads) == 1, f"expected one Alembic head, got {sorted(heads)}"
