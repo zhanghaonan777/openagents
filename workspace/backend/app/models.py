@@ -192,6 +192,30 @@ class Project(Base):
     )
 
 
+class ProjectAgent(Base):
+    """A role recruited into a project — the project's own team member.
+
+    The catalog role (``role_id``) is the template; this row is the hire. The same
+    role can be recruited into different projects as separate, isolated instances
+    (each with its own ``working_dir``). Logical membership lives here; launching
+    the actual per-project runtime is the daemon's job (see docs/launcher-followups).
+    """
+    __tablename__ = "project_agents"
+
+    id = Column(UUID(as_uuid=False), primary_key=True, default=_uuid, server_default=text("gen_random_uuid()"))
+    project_id = Column(UUID(as_uuid=False), ForeignKey("projects.id", ondelete="CASCADE"), nullable=False)
+    role_id = Column(Text, nullable=True)        # catalog role id, e.g. "backend-developer"
+    agent_name = Column(Text, nullable=False)    # the member's handle within this project
+    working_dir = Column(Text, nullable=True)
+    status = Column(Text, default="active", server_default=text("'active'"))  # active | removed
+    created_at = Column(DateTime(timezone=True), default=_now, server_default=text("NOW()"))
+
+    __table_args__ = (
+        Index("idx_project_agents_project", "project_id"),
+        UniqueConstraint("project_id", "agent_name", name="uq_project_agent"),
+    )
+
+
 class ChannelHumanMember(Base):
     """Per-channel human participant — Slack-style thread membership.
 

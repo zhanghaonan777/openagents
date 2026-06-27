@@ -60,6 +60,21 @@ CREATE TABLE IF NOT EXISTS projects (
 CREATE INDEX IF NOT EXISTS idx_projects_workspace_status ON projects (workspace_id, status);
 
 -- ===========================================================================
+-- Project agents (a role recruited into a project — the project's own team)
+-- ===========================================================================
+CREATE TABLE IF NOT EXISTS project_agents (
+    id           uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+    project_id   uuid        NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    role_id      text,
+    agent_name   text        NOT NULL,
+    working_dir  text,
+    status       text        NOT NULL DEFAULT 'active',
+    created_at   timestamptz NOT NULL DEFAULT now(),
+    CONSTRAINT uq_project_agent UNIQUE (project_id, agent_name)
+);
+CREATE INDEX IF NOT EXISTS idx_project_agents_project ON project_agents (project_id);
+
+-- ===========================================================================
 -- Channels (named event streams / threads)
 -- ===========================================================================
 CREATE TABLE IF NOT EXISTS channels (
@@ -429,4 +444,4 @@ CREATE TABLE IF NOT EXISTS alembic_version (
     CONSTRAINT alembic_version_pkc PRIMARY KEY (version_num)
 );
 INSERT INTO alembic_version (version_num)
-SELECT '027' WHERE NOT EXISTS (SELECT 1 FROM alembic_version);
+SELECT '028' WHERE NOT EXISTS (SELECT 1 FROM alembic_version);

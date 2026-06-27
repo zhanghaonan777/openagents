@@ -13,11 +13,33 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.models import Channel, Project
+from app.models import Channel, Project, ProjectAgent
 from app.response import ResponseCode, json_response, success_response
 from app.routers.network import _resolve_workspace, _verify_workspace_access
 
 router = APIRouter(prefix="/v1/projects", tags=["projects"])
+
+
+def _team(db: Session, project_id: str) -> list:
+    """The project's recruited team (active ProjectAgents)."""
+    rows = db.execute(
+        select(ProjectAgent).where(
+            ProjectAgent.project_id == project_id,
+            ProjectAgent.status == "active",
+        ).order_by(ProjectAgent.created_at.asc())
+    ).scalars().all()
+    return [
+        {"agentName": a.agent_name, "roleId": a.role_id, "workingDir": a.working_dir}
+        for a in rows
+    ]
+
+
+def _team_size(db: Session, project_id: str) -> int:
+    return db.execute(
+        select(func.count()).select_from(ProjectAgent).where(
+            ProjectAgent.project_id == project_id, ProjectAgent.status == "active",
+        )
+    ).scalar() or 0
 
 
 def _serialize(p: Project, thread_count: int = 0, team: Optional[list] = None) -> dict:
@@ -96,7 +118,7 @@ def list_projects(
         tc = db.execute(
             select(func.count()).select_from(Channel).where(Channel.project_id == p.id)
         ).scalar() or 0
-        out.append(_serialize(p, tc))
+        out.append(_serialize(p, tc, _team(db, p.id)))
     return success_response({"projects": out})
 
 
@@ -118,11 +140,82 @@ def get_project(
         select(Channel).where(Channel.project_id == p.id, Channel.status != "deleted")
         .order_by(Channel.last_event_at.desc().nullslast())
     ).scalars().all()
-    # Derived team: the agents participating in this project's threads.
-    team = sorted({m.agent_name for ch in threads for m in (ch.participants or [])})
-    data = _serialize(p, len(threads), team)
+    data = _serialize(p, len(threads), _team(db, p.id))
     data["threads"] = [
         {"name": ch.name, "title": ch.title, "lastEventAt": ch.last_event_at}
         for ch in threads
     ]
     return success_response(data)
+
+
+class RecruitRequest(BaseModel):
+    network: str
+    role_id: str                      # catalog role id, e.g. "backend-developer"
+    agent_name: Optional[str] = None  # handle in this project; defaults to role_id
+    working_dir: Optional[str] = None
+
+
+@router.post("/{project_id}/recruit")
+def recruit_agent(
+    project_id: str,
+    body: RecruitRequest,
+    db: Session = Depends(get_db),
+    x_workspace_token: Optional[str] = Header(None),
+    authorization: Optional[str] = Header(None),
+):
+    """Recruit a catalog role into the project (the project's own team member).
+    Launching its runtime with an isolated working dir is the daemon's job."""
+    workspace, err = _auth(db, body.network, x_workspace_token, authorization)
+    if err:
+        return err
+    p = db.get(Project, project_id)
+    if not p or str(p.workspace_id) != str(workspace.id):
+        return json_response(ResponseCode.NOT_FOUND, "Project not found")
+    role_id = (body.role_id or "").strip()
+    if not role_id:
+        return json_response(ResponseCode.BAD_REQUEST, "role_id required")
+    agent_name = (body.agent_name or role_id).strip()
+    existing = db.execute(
+        select(ProjectAgent).where(
+            ProjectAgent.project_id == project_id, ProjectAgent.agent_name == agent_name,
+        )
+    ).scalar_one_or_none()
+    if existing:
+        if existing.status != "active":
+            existing.status = "active"
+            db.commit()
+            return success_response({"recruited": True, "agentName": agent_name, "reactivated": True})
+        return json_response(ResponseCode.BAD_REQUEST, f"'{agent_name}' is already on this project")
+    pa = ProjectAgent(project_id=project_id, role_id=role_id, agent_name=agent_name, working_dir=body.working_dir)
+    db.add(pa)
+    db.commit()
+    return success_response({"recruited": True, "agentName": agent_name, "team": _team(db, project_id)})
+
+
+class RemoveAgentRequest(BaseModel):
+    network: str
+    agent_name: str
+
+
+@router.post("/{project_id}/agents/remove")
+def remove_agent(
+    project_id: str,
+    body: RemoveAgentRequest,
+    db: Session = Depends(get_db),
+    x_workspace_token: Optional[str] = Header(None),
+    authorization: Optional[str] = Header(None),
+):
+    """Remove a recruited agent from the project (soft — status=removed)."""
+    workspace, err = _auth(db, body.network, x_workspace_token, authorization)
+    if err:
+        return err
+    pa = db.execute(
+        select(ProjectAgent).where(
+            ProjectAgent.project_id == project_id, ProjectAgent.agent_name == body.agent_name,
+        )
+    ).scalar_one_or_none()
+    if not pa:
+        return json_response(ResponseCode.NOT_FOUND, "Agent not on this project")
+    pa.status = "removed"
+    db.commit()
+    return success_response({"removed": True, "agentName": body.agent_name})

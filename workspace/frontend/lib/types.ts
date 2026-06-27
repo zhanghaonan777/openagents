@@ -484,6 +484,12 @@ export interface PaginationMeta {
   has_prev: boolean;
 }
 
+export interface ProjectTeamMember {
+  agentName: string;
+  roleId: string | null;
+  workingDir: string | null;
+}
+
 export interface Project {
   id: string;
   name: string;
@@ -493,7 +499,7 @@ export interface Project {
   createdAt: string | null;
   archivedAt: string | null;
   threadCount: number;
-  team: string[];
+  team: ProjectTeamMember[];
 }
 
 export interface ProjectDetail extends Project {
