@@ -541,3 +541,33 @@ def test_inclusive_no_cue_does_not_force(db):
     _ev(db, ws, "openagents:pm", "下周。", 200)
     new_event = _make_event("openagents:pm", "channel/disc", "下周。")
     assert _inclusive_next_speaker(ch, new_event, db, ws, {"pm", "fe", "be"}) == []
+
+
+# ---------------------------------------------------------------------------
+# Loop guard — stop runaway all-agent threads (e.g. a 2-party DM ping-pong)
+# ---------------------------------------------------------------------------
+
+def test_loop_guard_counts_agent_turns_and_resets_on_human(db):
+    from app.mods.workspace_mod import _consecutive_agent_turns
+    ws, ch = _disc_channel(db, ["fe", "be"])
+    _ev(db, ws, "openagents:fe", "x", 100)
+    _ev(db, ws, "openagents:be", "y", 200)
+    _ev(db, ws, "human:u", "go", 300)                              # human resets the walk
+    _ev(db, ws, "openagents:fe", "🤝", 400)
+    _ev(db, ws, "openagents:be", "🤝", 500)
+    _ev(db, ws, "openagents:fe", "🤝", 600)
+    _ev(db, ws, "openagents:be", "thinking...", 650, mtype="status")  # intermediate — skipped
+    _ev(db, ws, "openagents:be", "🤝", 700)
+    db.flush()
+    # newest-first: 700, 650(skip), 600, 500, 400 are agent → stop at 300 (human)
+    assert _consecutive_agent_turns(db, ch) == 4
+
+
+def test_loop_guard_trips_after_limit(db):
+    from app.mods.workspace_mod import _consecutive_agent_turns, _AGENT_TURN_LIMIT
+    ws, ch = _disc_channel(db, ["fe", "be"])
+    for i in range(_AGENT_TURN_LIMIT + 3):
+        src = "openagents:fe" if i % 2 == 0 else "openagents:be"
+        _ev(db, ws, src, "🤝", 1000 + i)
+    db.flush()
+    assert _consecutive_agent_turns(db, ch) >= _AGENT_TURN_LIMIT

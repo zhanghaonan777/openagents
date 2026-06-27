@@ -519,6 +519,48 @@ def _fallback_targets(event, channel, mentions: List[str], live: Optional[set] =
     return [participants[0]] if participants else []
 
 
+# Loop guard — a thread with only agents talking (no human) has no natural
+# terminator: in a 2-party DM the next-speaker router just alternates, so two
+# polite agents can acknowledge each other forever ("🤝" → "🤝" → …). Cap the
+# consecutive agent turns since the last human, then let the thread rest.
+_AGENT_TURN_LIMIT = 12
+
+
+def _consecutive_agent_turns(db, channel) -> int:
+    """Count this channel's recent agent posts with no human in between.
+
+    Walks the channel newest-first, counting 'real' (chat/peer/delegate) posts
+    from agents and stopping at the first human message. thinking/status/todos
+    and system posts don't count. The message currently being routed isn't
+    persisted yet, so this is the count *before* it.
+
+    The fetch window is several times the turn limit because each agent turn
+    emits 2-3 intermediate thinking/status events around its one real message —
+    a window of just the limit would be swamped by that noise and never reach it.
+    """
+    from app.models import EventRecord
+    rows = db.execute(
+        select(EventRecord)
+        .where(
+            EventRecord.network_id == channel.workspace_id,
+            EventRecord.target == f"channel/{channel.name}",
+            EventRecord.type == "workspace.message.posted",
+        )
+        .order_by(EventRecord.timestamp.desc())
+        .limit(_AGENT_TURN_LIMIT * 6)
+    ).scalars().all()
+    count = 0
+    for r in rows:
+        if (r.payload or {}).get("message_type") in ("thinking", "status", "todos"):
+            continue
+        src = r.source or ""
+        if src.startswith("human:"):
+            break
+        if src.startswith("openagents:"):
+            count += 1
+    return count
+
+
 # Discussion cues — when a human invites the whole room to weigh in, switch the
 # next-speaker router from "pick the one most-relevant, then stop" to an
 # inclusive round-robin so every live participant speaks once before the thread
@@ -1082,6 +1124,21 @@ async def _handle_message_posted(event: Event, ctx: PipelineContext) -> Optional
     # ── Single live agent (others offline) ──────────────────────────
     else:
         targets = _fallback_targets(event, channel, mentions, live=live)
+
+    # ── Loop guard ──────────────────────────────────────────────────
+    # An all-agent thread has no natural terminator — a 2-party DM's next-speaker
+    # router just alternates, so two agents can ack each other forever. Once a
+    # channel has had _AGENT_TURN_LIMIT consecutive agent turns with no human,
+    # stop routing and let it rest until a human speaks again. (Human @mentions
+    # and broadcasts above are deliberate acts and reset the count by appearing
+    # in history, so this never blocks a human-driven exchange.)
+    if targets and not is_human and event.source.startswith("openagents:") \
+            and _consecutive_agent_turns(db, channel) >= _AGENT_TURN_LIMIT:
+        logger.info(
+            "workspace_mod: loop guard tripped on %s (%d+ consecutive agent turns) — resting",
+            channel.name, _AGENT_TURN_LIMIT,
+        )
+        targets = []
 
     # ALWAYS set target_agents, even when nobody should respond.
     #
