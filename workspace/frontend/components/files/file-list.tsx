@@ -4,6 +4,7 @@ import { useRef, useState, useMemo } from 'react';
 import { Search, Upload, FolderOpen, Trash2 } from 'lucide-react';
 import { useWorkspace } from '@/lib/workspace-context';
 import { useLayout } from '@/components/layout/layout-context';
+import { useProjectChannels, inProjectChannels } from '@/lib/use-project-scope';
 import { cn } from '@/lib/utils';
 import { toast } from 'sonner';
 import { formatSize, getFileIcon, timeAgo, basename } from './file-utils';
@@ -11,14 +12,18 @@ import { formatSize, getFileIcon, timeAgo, basename } from './file-utils';
 export function FileList() {
   const { files, selectedFileId, setSelectedFileId, uploadFile, deleteFile, currentFilePath } = useWorkspace();
   const { isMobile, openMobileDetail } = useLayout();
+  const projectChannels = useProjectChannels();
   const [search, setSearch] = useState('');
   const [uploading, setUploading] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Flat list of all files, sorted by most recently modified
   const recentFiles = useMemo(() => {
-    // Hide .keep placeholder files
-    let list = files.filter((f) => !f.filename.endsWith('/.keep') && f.filename !== '.keep');
+    // Hide .keep placeholder files; scope to the active project by the channel
+    // each file belongs to.
+    let list = files.filter((f) =>
+      !f.filename.endsWith('/.keep') && f.filename !== '.keep' &&
+      inProjectChannels(projectChannels, f.channelName));
     if (search) {
       list = list.filter((f) => f.filename.toLowerCase().includes(search.toLowerCase()));
     }
@@ -28,7 +33,7 @@ export function FileList() {
       return bTime - aTime;
     });
     return list;
-  }, [files, search]);
+  }, [files, search, projectChannels]);
 
   const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const selectedFiles = e.target.files;

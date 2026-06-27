@@ -33,6 +33,7 @@ import type { WorkspaceCollaborator } from '@/lib/types';
 import { useOpenAgentsAuth } from '@/lib/openagents-auth-context';
 import { NewThreadDialog } from '@/components/threads/new-thread-dialog';
 import { DelegateDialog } from '@/components/agents/delegate-dialog';
+import { useProjectChannels, inProjectChannels } from '@/lib/use-project-scope';
 
 // ── Navigation button helper ──
 
@@ -80,6 +81,7 @@ function NavButton({
 export function SidebarContent() {
   const { isSidebarOpen, sidebarToggle, viewMode, setViewMode, setSelectedAgentName, openRoleLibrary, currentProjectId, projectDataVersion } = useLayout();
   const { agents, sessions, files, browserTabs, createSession, workspace, token, refreshWorkspace, todos, routines, knowledge, currentUser, onlineUsers, unreadNotificationCount, teamActivity, a2aTasks, refreshA2ATasks } = useWorkspace();
+  const projectChannels = useProjectChannels();
   const [assignTo, setAssignTo] = useState<string | null>(null);
   const { user, isOpenAgentsDomain, signIn, signOut } = useOpenAgentsAuth();
   const { theme, setTheme } = useTheme();
@@ -146,11 +148,17 @@ export function SidebarContent() {
   const onlineCount = recentAgents.filter((a) => a.status === 'online').length;
   const agentNames = agents.map((a) => a.agentName);
   const workingCount = recentAgents.filter((a) => teamActivity[a.agentName]?.working).length;
-  const tasksInProgress = a2aTasks.filter((t) => t.state === 'submitted' || t.state === 'working').length;
-  const reviewsPending = a2aTasks.filter((t) => t.review?.state === 'pending').length;
+  // Scope the A2A-task badges to the active project (by the channel each task
+  // lives in) so the nav counts match the project-scoped Tasks/Review views.
+  const scopedTasks = useMemo(
+    () => a2aTasks.filter((t) => inProjectChannels(projectChannels, t.channel)),
+    [a2aTasks, projectChannels],
+  );
+  const tasksInProgress = scopedTasks.filter((t) => t.state === 'submitted' || t.state === 'working').length;
+  const reviewsPending = scopedTasks.filter((t) => t.review?.state === 'pending').length;
   // Items needing a human (drives the Team nav badge): clarifications, reviews,
   // requested changes, and failures. Mirrors the Team view's attention queue.
-  const teamAttention = a2aTasks.filter((t) => !t.deleted && (
+  const teamAttention = scopedTasks.filter((t) => !t.deleted && (
     t.clarification || t.review?.state === 'pending' || t.review?.state === 'changes_requested' || t.state === 'failed' || t.state === 'rejected'
   )).length;
 
