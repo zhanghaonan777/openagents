@@ -22,6 +22,7 @@ from sqlalchemy import select
 
 from openagents.core.onm_events import Event, WorkspaceEventTypes
 from openagents.core.onm_mods import EventRejected, PipelineContext, TransformMod
+from app.logfmt import kv
 
 logger = logging.getLogger(__name__)
 
@@ -117,6 +118,11 @@ async def _handle_agent_join(event: Event, ctx: PipelineContext) -> Optional[Eve
 
     workspace.last_activity_at = now
     db.flush()
+
+    logger.info("agent.join %s", kv(
+        event=event.id, ws=workspace.id, agent=agent_name,
+        role=role_id, type=agent_type, rejoin=bool(existing),
+    ))
 
     # Enrich event metadata with resolved info + session_id so the
     # router returns it to the joining client.
@@ -1155,6 +1161,13 @@ async def _handle_message_posted(event: Event, ctx: PipelineContext) -> Optional
     # name causes old clients to reject (they fail the includes check)
     # and new clients to treat it as "nobody" (the sentinel is ignored).
     event.metadata["target_agents"] = targets if targets else ["__no_response__"]
+
+    # Trace the routing decision keyed by the inbound event id, so a message's
+    # journey (and any agent-to-agent loop) can be followed in the logs.
+    logger.info("route %s", kv(
+        event=event.id, ws=workspace.id, ch=channel.name,
+        src=event.source, targets=targets if targets else "none",
+    ))
 
     # Surface participants we skipped because they're offline, so the UI can
     # tell the human "X didn't reply — it's offline" instead of silence.

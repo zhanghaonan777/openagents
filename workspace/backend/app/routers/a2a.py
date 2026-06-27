@@ -37,6 +37,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy.orm.exc import StaleDataError
 
 from app.database import get_db
+from app.logfmt import kv
 from app.models import Channel, ChannelMember, EventRecord, TaskRecord, TodoRecord, WorkspaceMember
 from app.response import ResponseCode, json_response, success_response
 from app.routers.network import (
@@ -290,6 +291,10 @@ def _append_event(t: TaskRecord, etype: str, actor: Optional[str] = None,
 
 def _apply_transition(t: TaskRecord, new_state: str, status_msg: Optional[dict],
                       actor: str = "system") -> None:
+    logger.info("task.transition %s", kv(
+        task=t.id, ws=t.workspace_id, ch=t.channel_name,
+        frm=t.state, to=new_state, by=actor,
+    ))
     t.state = new_state
     t.updated_at = _now()
     if status_msg:
@@ -597,6 +602,10 @@ def _build_and_kickoff_task(
     _append_event(task, "task_created", actor=_agent_name(source), detail=contractor_name)
     db.add(task)
     db.flush()
+    logger.info("task.created %s", kv(
+        task=task.id, ws=workspace.id, ch=context_id,
+        delegator=source, contractor=contractor_addr, skill=skill_id, parent=parent_id,
+    ))
 
     # Kick-off: post an @-mention so the contractor's runtime acts on it.
     # Best-effort — a routing hiccup must not fail the delegation itself.
