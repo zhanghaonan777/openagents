@@ -295,7 +295,7 @@ export function SidebarContent() {
                         </span>
                         {working && <span className="size-1.5 rounded-full bg-blue-500 animate-pulse shrink-0" title="working" />}
                         {agent.agentCode && (
-                          <span className="ml-auto shrink-0 text-[9px] font-mono text-muted-foreground/60 tabular-nums" title={`Agent id #${agent.agentCode}`}>
+                          <span className="ml-auto shrink-0 text-[9px] font-mono text-muted-foreground bg-muted border border-border/60 rounded px-1 py-px tabular-nums" title={`Agent id #${agent.agentCode}`}>
                             #{agent.agentCode}
                           </span>
                         )}
