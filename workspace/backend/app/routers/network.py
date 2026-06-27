@@ -29,6 +29,7 @@ from app.models import Channel, Workspace, WorkspaceMember
 from app.pipeline_factory import pipeline
 from app.response import ResponseCode, json_response, success_response
 from app.services.liveness import effective_status
+from app.ids import agent_code
 from openagents.core.onm_events import Event
 from openagents.core.onm_mods import EventRejected, PipelineContext
 
@@ -400,6 +401,7 @@ def discover(
             "address": f"openagents:{m.agent_name}",
             "role": m.role,
             "role_id": m.role_id,
+            "agent_code": agent_code(workspace.id, m.agent_name),
             "status": status,
             "agent_type": m.agent_type,
             "server_host": m.server_host,

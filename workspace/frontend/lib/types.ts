@@ -15,6 +15,7 @@ export interface WorkspaceAgent {
   agentName: string;
   role: string;
   roleId: string | null;   // catalog role this agent was hired from (e.g. "backend-developer")
+  agentCode: string | null; // short stable id badge (the "编号"), e.g. "7f3a"
   agentType: string | null;
   serverHost: string | null;
   workingDir: string | null;
@@ -429,6 +430,7 @@ export interface NetworkAgent {
   address: string;
   role: string;
   role_id?: string | null;
+  agent_code?: string | null;
   status: string;
   agent_type: string | null;
   server_host: string | null;
@@ -532,6 +534,7 @@ export function networkAgentToWorkspaceAgent(agent: NetworkAgent): WorkspaceAgen
     agentName: agent.address.replace(/^openagents:/, ''),
     role: agent.role,
     roleId: agent.role_id ?? null,
+    agentCode: agent.agent_code ?? null,
     agentType: agent.agent_type || null,
     serverHost: agent.server_host || null,
     workingDir: agent.working_dir || null,

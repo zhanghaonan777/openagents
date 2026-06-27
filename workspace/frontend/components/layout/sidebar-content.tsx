@@ -294,21 +294,26 @@ export function SidebarContent() {
                           {agent.agentName}
                         </span>
                         {working && <span className="size-1.5 rounded-full bg-blue-500 animate-pulse shrink-0" title="working" />}
+                        {agent.agentCode && (
+                          <span className="ml-auto shrink-0 text-[9px] font-mono text-muted-foreground/60 tabular-nums" title={`Agent id #${agent.agentCode}`}>
+                            #{agent.agentCode}
+                          </span>
+                        )}
                       </div>
                       {working && act?.label ? (
                         <div className="text-[10px] text-blue-500/80 font-mono truncate leading-tight">{act.label}</div>
                       ) : (
                         <div className="text-[10px] truncate leading-tight">
-                          {agent.roleId && (
-                            <>
-                              <span className="font-mono text-muted-foreground/70" title={`Role id: ${agent.roleId}`}>{agent.roleId}</span>
-                              <span className="text-muted-foreground/40"> · </span>
-                            </>
-                          )}
                           {offline ? (
                             <span className="text-muted-foreground/70">offline{agent.lastHeartbeatAt ? ` · last seen ${timeAgo(agent.lastHeartbeatAt)}` : ''}</span>
                           ) : (
                             <span className="text-emerald-600/80 dark:text-emerald-500/80">online</span>
+                          )}
+                          {agent.roleId && (
+                            <>
+                              <span className="text-muted-foreground/40"> · </span>
+                              <span className="font-mono text-muted-foreground/70" title={`Role: ${agent.roleId}`}>{agent.roleId}</span>
+                            </>
                           )}
                         </div>
                       )}

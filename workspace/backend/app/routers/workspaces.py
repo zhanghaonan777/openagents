@@ -39,6 +39,7 @@ from app.models import (
 from app.response import ResponseCode, json_response, success_response
 from app.routers.network import _workspace_filter
 from app.services.liveness import effective_status
+from app.ids import agent_code
 
 logger = logging.getLogger(__name__)
 
@@ -131,6 +132,7 @@ def _format_workspace(ws: Workspace, members: list, now: datetime) -> dict:
             "agentName": m.agent_name,
             "role": m.role,
             "roleId": m.role_id,
+            "agentCode": agent_code(ws.id, m.agent_name),
             "agentType": m.agent_type,
             "status": status,
             "description": m.description,

@@ -626,6 +626,7 @@ class WorkspaceApi {
       agentName: a.address.replace(/^openagents:/, ''),
       role: a.role,
       roleId: a.role_id ?? null,
+      agentCode: a.agent_code ?? null,
       agentType: a.agent_type || null,
       serverHost: a.server_host || null,
       workingDir: a.working_dir || null,

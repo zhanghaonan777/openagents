@@ -127,8 +127,9 @@ async def _handle_agent_join(event: Event, ctx: PipelineContext) -> Optional[Eve
     workspace.last_activity_at = now
     db.flush()
 
+    from app.ids import agent_code
     logger.info("agent.join %s", kv(
-        event=event.id, ws=workspace.id, agent=agent_name,
+        event=event.id, ws=workspace.id, agent=agent_name, code=agent_code(workspace.id, agent_name),
         role=role_id, type=agent_type, rejoin=bool(existing),
     ))
 
