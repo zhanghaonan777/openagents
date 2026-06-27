@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import { ChevronDown, Plus, FolderKanban, Check } from 'lucide-react';
+import { toast } from 'sonner';
 import { useLayout } from '@/components/layout/layout-context';
 import { workspaceApi } from '@/lib/api';
 import { cn } from '@/lib/utils';
@@ -35,6 +36,9 @@ export function ProjectSwitcher() {
       setName(''); setGoal(''); setCreating(false); setOpen(false);
       await load();
       setCurrentProjectId(p.id);
+      toast.success(`Project "${p.name}" created`);
+    } catch (e) {
+      toast.error(`Could not create project: ${e instanceof Error ? e.message : 'unknown error'}`);
     } finally { setBusy(false); }
   }
 
