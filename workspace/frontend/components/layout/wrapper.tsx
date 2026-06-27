@@ -21,6 +21,7 @@ import { InboxView } from '@/components/inbox/inbox-view';
 import { TeamView } from '@/components/team/team-view';
 import { KnowledgeView } from '@/components/knowledge/knowledge-view';
 import { useWorkspace } from '@/lib/workspace-context';
+import { workspaceApi } from '@/lib/api';
 import { EmptyState } from '@/components/chat/empty-state';
 import { RoleLibrary } from '@/components/agents/role-library';
 import type { RoleTemplate } from '@/lib/role-templates';
@@ -35,7 +36,7 @@ import { useMemo } from 'react';
  * agent into the live, event-sourced workspace.
  */
 function RoleLibraryHost() {
-  const { isRoleLibraryOpen, closeRoleLibrary, openRoleLibrary } = useLayout();
+  const { isRoleLibraryOpen, closeRoleLibrary, openRoleLibrary, currentProjectId, refreshProjectData } = useLayout();
   const { agents } = useWorkspace();
 
   const joinedNames = useMemo(
@@ -43,8 +44,19 @@ function RoleLibraryHost() {
     [agents],
   );
 
-  const handleAdd = (role: RoleTemplate, runtime: string) => {
+  const handleAdd = async (role: RoleTemplate, runtime: string) => {
     closeRoleLibrary();
+    // Project mode: recruit the role into the active project (its own team).
+    if (currentProjectId) {
+      try {
+        await workspaceApi.recruitAgent(currentProjectId, role.id);
+        refreshProjectData();
+        toast.success(`Recruited ${role.name} to this project`);
+      } catch (e) {
+        toast.error(`Could not recruit ${role.name}: ${e instanceof Error ? e.message : 'error'}`);
+      }
+      return;
+    }
     if (joinedNames.has(role.name.toLowerCase())) {
       toast(`${role.name} is already in this workspace`);
       return;

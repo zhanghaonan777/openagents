@@ -975,6 +975,20 @@ class WorkspaceApi {
     return this.request(`/v1/projects/${encodeURIComponent(id)}?network=${this.workspaceId}`);
   }
 
+  async recruitAgent(projectId: string, roleId: string, p?: { agentName?: string; workingDir?: string }): Promise<{ recruited: boolean; agentName: string }> {
+    return this.request(`/v1/projects/${encodeURIComponent(projectId)}/recruit`, {
+      method: 'POST',
+      body: JSON.stringify({ network: this.workspaceId, role_id: roleId, agent_name: p?.agentName, working_dir: p?.workingDir }),
+    });
+  }
+
+  async removeProjectAgent(projectId: string, agentName: string): Promise<{ removed: boolean }> {
+    return this.request(`/v1/projects/${encodeURIComponent(projectId)}/agents/remove`, {
+      method: 'POST',
+      body: JSON.stringify({ network: this.workspaceId, agent_name: agentName }),
+    });
+  }
+
   async getA2APeerThread(channel: string): Promise<{ channel: string; messages: import('./types').PeerMessage[] }> {
     const params = new URLSearchParams({ network: this.workspaceId, channel });
     return this.request(`/v1/a2a/messages?${params}`);

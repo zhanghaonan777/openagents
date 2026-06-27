@@ -14,7 +14,7 @@ import type { Project } from '@/lib/types';
  *  the "+ New Project" lives at the bottom of the dropdown (Linear/Vercel/Slack
  *  pattern). Rendered as the sidebar header, replacing the old org header. */
 export function ProjectSwitcher() {
-  const { currentProjectId, setCurrentProjectId } = useLayout();
+  const { currentProjectId, setCurrentProjectId, projectDataVersion } = useLayout();
   const { workspace } = useWorkspace();
   const [projects, setProjects] = useState<Project[]>([]);
   const [open, setOpen] = useState(false);
@@ -26,7 +26,7 @@ export function ProjectSwitcher() {
   const load = useCallback(async () => {
     try { setProjects((await workspaceApi.listProjects()).projects); } catch { /* best-effort */ }
   }, []);
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => { load(); }, [load, projectDataVersion]);
 
   const current = projects.find((p) => p.id === currentProjectId) || null;
   const orgName = workspace?.name || 'Workspace';
