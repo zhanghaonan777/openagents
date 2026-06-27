@@ -136,7 +136,7 @@ function DMSection({
 
 export function ThreadList() {
   const { sessions, currentSessionId, setCurrentSessionId, agents, lastMessageBySession, activeSessionIds, completedSessionIds, updateSession, renameSession, dmConversations } = useWorkspace();
-  const { sidebarToggle, isMobile, openMobileDetail, currentProjectId } = useLayout();
+  const { sidebarToggle, isMobile, openMobileDetail } = useLayout();
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState<SearchHit[]>([]);
   const [searching, setSearching] = useState(false);
@@ -178,12 +178,9 @@ export function ThreadList() {
 
   const [showArchived, setShowArchived] = useState(false);
 
-  // Sort sessions by backend last_event_at (stable, no client-side jumping).
-  // Project mode: when a project is active, show only its threads; "All projects"
-  // (currentProjectId === null) shows every thread.
+  // Sort sessions by backend last_event_at (stable, no client-side jumping)
   const sortedSessions = [...sessions]
     .filter((s) => s.status !== 'deleted' && !s.sessionId.startsWith('dm-') && (!s.sessionId.startsWith('routine:') || s.sessionId === currentSessionId))
-    .filter((s) => !currentProjectId || s.projectId === currentProjectId)
     .sort((a, b) => {
       const aTime = a.lastEventAt || (a.createdAt ? new Date(a.createdAt).getTime() : 0);
       const bTime = b.lastEventAt || (b.createdAt ? new Date(b.createdAt).getTime() : 0);

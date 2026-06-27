@@ -50,7 +50,6 @@ export interface WorkspaceSession {
   master: string | null;
   createdAt: string | null;
   lastEventAt: number | null; // unix ms timestamp of last message
-  projectId: string | null;   // project this thread is filed under (project mode)
 }
 
 /** Kinds of workspace message. `chat` = visible reply; `thinking`/`status`/
@@ -447,7 +446,6 @@ export interface NetworkChannel {
   last_event_at: number | null;
   status: string;
   starred: boolean;
-  project_id?: string | null;
 }
 
 export interface NetworkDiscovery {
@@ -484,28 +482,6 @@ export interface PaginationMeta {
   total_pages: number | null;
   has_next: boolean;
   has_prev: boolean;
-}
-
-export interface ProjectTeamMember {
-  agentName: string;
-  roleId: string | null;
-  workingDir: string | null;
-}
-
-export interface Project {
-  id: string;
-  name: string;
-  goal: string | null;
-  status: string;
-  createdBy: string | null;
-  createdAt: string | null;
-  archivedAt: string | null;
-  threadCount: number;
-  team: ProjectTeamMember[];
-}
-
-export interface ProjectDetail extends Project {
-  threads: { name: string; title: string | null; lastEventAt: number | null }[];
 }
 
 export interface MessagePollResponse {
@@ -578,6 +554,5 @@ export function networkChannelToSession(ch: NetworkChannel, workspaceId: string)
     master: ch.master,
     createdAt: ch.created_at ? new Date(ch.created_at).toISOString() : null,
     lastEventAt: ch.last_event_at,
-    projectId: ch.project_id ?? null,
   };
 }

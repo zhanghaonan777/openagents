@@ -33,7 +33,6 @@ import type { WorkspaceCollaborator } from '@/lib/types';
 import { useOpenAgentsAuth } from '@/lib/openagents-auth-context';
 import { NewThreadDialog } from '@/components/threads/new-thread-dialog';
 import { DelegateDialog } from '@/components/agents/delegate-dialog';
-import { useProjectChannels, inProjectChannels } from '@/lib/use-project-scope';
 
 // ── Navigation button helper ──
 
@@ -79,9 +78,8 @@ function NavButton({
 // ── Main SidebarContent ──
 
 export function SidebarContent() {
-  const { isSidebarOpen, sidebarToggle, viewMode, setViewMode, setSelectedAgentName, openRoleLibrary, currentProjectId, projectDataVersion } = useLayout();
+  const { isSidebarOpen, sidebarToggle, viewMode, setViewMode, setSelectedAgentName, openRoleLibrary } = useLayout();
   const { agents, sessions, files, browserTabs, createSession, workspace, token, refreshWorkspace, todos, routines, knowledge, currentUser, onlineUsers, unreadNotificationCount, teamActivity, a2aTasks, refreshA2ATasks } = useWorkspace();
-  const projectChannels = useProjectChannels();
   const [assignTo, setAssignTo] = useState<string | null>(null);
   const { user, isOpenAgentsDomain, signIn, signOut } = useOpenAgentsAuth();
   const { theme, setTheme } = useTheme();
@@ -111,7 +109,7 @@ export function SidebarContent() {
     if (agents.length >= 2) {
       setNewThreadOpen(true);
     } else {
-      createSession({ projectId: currentProjectId });
+      createSession();
       setViewMode('threads');
     }
   };
@@ -120,45 +118,20 @@ export function SidebarContent() {
   // Offline members are styled as such (see the agent rows) rather than hidden —
   // hiding them made the team and the Tasks/Review nav vanish when no launcher
   // happened to be running.
-  const workspaceRoster = useMemo(() => {
+  // This workspace's team roster (online first, then recently-seen, then offline).
+  // Each workspace is self-contained, so this is simply the workspace's agents.
+  const recentAgents = useMemo(() => {
     const rank = (a: typeof agents[number]) => (a.status === 'online' ? 0 : isRecentAgent(a) ? 1 : 2);
     return [...agents].sort((a, b) => rank(a) - rank(b) || a.agentName.localeCompare(b.agentName));
   }, [agents]);
-
-  // Project mode: when a project is active, the roster is that project's recruited
-  // team (resolved to live workspace agents for status; recruited-but-not-running
-  // roles still show, as offline). "All projects" → the whole workspace roster.
-  const [projectTeam, setProjectTeam] = useState<string[] | null>(null);
-  useEffect(() => {
-    if (!currentProjectId) { setProjectTeam(null); return; }
-    let alive = true;
-    workspaceApi.getProject(currentProjectId)
-      .then((p) => { if (alive) setProjectTeam(p.team.map((m) => m.agentName)); })
-      .catch(() => { if (alive) setProjectTeam([]); });
-    return () => { alive = false; };
-  }, [currentProjectId, projectDataVersion]);
-
-  const recentAgents = useMemo(() => {
-    if (!currentProjectId || projectTeam === null) return workspaceRoster;
-    return projectTeam.map((name) =>
-      agents.find((a) => a.agentName === name) ||
-      ({ agentName: name, status: 'offline', lastHeartbeatAt: null, agentType: null } as typeof agents[number])
-    );
-  }, [currentProjectId, projectTeam, workspaceRoster, agents]);
   const onlineCount = recentAgents.filter((a) => a.status === 'online').length;
   const agentNames = agents.map((a) => a.agentName);
   const workingCount = recentAgents.filter((a) => teamActivity[a.agentName]?.working).length;
-  // Scope the A2A-task badges to the active project (by the channel each task
-  // lives in) so the nav counts match the project-scoped Tasks/Review views.
-  const scopedTasks = useMemo(
-    () => a2aTasks.filter((t) => inProjectChannels(projectChannels, t.channel)),
-    [a2aTasks, projectChannels],
-  );
-  const tasksInProgress = scopedTasks.filter((t) => t.state === 'submitted' || t.state === 'working').length;
-  const reviewsPending = scopedTasks.filter((t) => t.review?.state === 'pending').length;
+  const tasksInProgress = a2aTasks.filter((t) => t.state === 'submitted' || t.state === 'working').length;
+  const reviewsPending = a2aTasks.filter((t) => t.review?.state === 'pending').length;
   // Items needing a human (drives the Team nav badge): clarifications, reviews,
   // requested changes, and failures. Mirrors the Team view's attention queue.
-  const teamAttention = scopedTasks.filter((t) => !t.deleted && (
+  const teamAttention = a2aTasks.filter((t) => !t.deleted && (
     t.clarification || t.review?.state === 'pending' || t.review?.state === 'changes_requested' || t.state === 'failed' || t.state === 'rejected'
   )).length;
 
@@ -378,10 +351,10 @@ export function SidebarContent() {
 
             {/* Project — panels scoped to the active project (see project-mode-design §4) */}
             <p className="text-xs font-normal text-muted-foreground px-2 py-1.5 mb-0.5 mt-6">
-              {currentProjectId ? 'Project' : 'Collaboration'}
+              Collaboration
             </p>
             <div className="space-y-0.5">
-              <NavButton active={viewMode === 'threads'} icon={<MessageSquare className="size-[15px]" />} label="Threads" count={sessions.filter((s) => !s.sessionId.startsWith('routine:') && !s.sessionId.startsWith('dm-') && (!currentProjectId || s.projectId === currentProjectId)).length} onClick={() => setViewMode('threads')} />
+              <NavButton active={viewMode === 'threads'} icon={<MessageSquare className="size-[15px]" />} label="Threads" count={sessions.filter((s) => !s.sessionId.startsWith('routine:') && !s.sessionId.startsWith('dm-')).length} onClick={() => setViewMode('threads')} />
               {agents.length > 0 && (
                 <>
                   <NavButton active={viewMode === 'tasks'} icon={<ListTodo className="size-[15px]" />} label="Tasks" count={todos.filter((t) => t.status === 'pending' || t.status === 'in_progress').length} onClick={() => setViewMode('tasks')} />
@@ -511,7 +484,7 @@ export function SidebarContent() {
         agents={agents}
         sessions={sessions}
         onCreateThread={({ master, participants, resumeFrom }) => {
-          createSession({ master, participants, resumeFrom, projectId: currentProjectId });
+          createSession({ master, participants, resumeFrom });
           setViewMode('threads');
         }}
       />

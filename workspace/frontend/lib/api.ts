@@ -208,7 +208,6 @@ class WorkspaceApi {
     master?: string;
     participants?: string[];
     resumeFrom?: string;
-    projectId?: string | null;
   } = {}): Promise<WorkspaceSession> {
     const event = await this.sendEvent({
       type: 'network.channel.create',
@@ -219,7 +218,6 @@ class WorkspaceApi {
         ...(opts.master && { master: opts.master }),
         ...(opts.participants && { participants: opts.participants }),
         ...(opts.resumeFrom && { resume_from: opts.resumeFrom }),
-        ...(opts.projectId && { project_id: opts.projectId }),
       },
     });
 
@@ -236,7 +234,6 @@ class WorkspaceApi {
       master: opts.master || null,
       createdAt: new Date(event.timestamp).toISOString(),
       lastEventAt: null,
-      projectId: opts.projectId ?? null,
     };
   }
 
@@ -978,36 +975,6 @@ class WorkspaceApi {
   async listA2APeerThreads(): Promise<{ threads: import('./types').PeerThread[] }> {
     const params = new URLSearchParams({ network: this.workspaceId });
     return this.request(`/v1/a2a/messages?${params}`);
-  }
-
-  // ── Projects (project mode) ──
-  async listProjects(): Promise<{ projects: import('./types').Project[] }> {
-    return this.request(`/v1/projects?network=${this.workspaceId}`);
-  }
-
-  async createProject(p: { name: string; goal?: string }): Promise<import('./types').Project> {
-    return this.request('/v1/projects', {
-      method: 'POST',
-      body: JSON.stringify({ network: this.workspaceId, name: p.name, goal: p.goal }),
-    });
-  }
-
-  async getProject(id: string): Promise<import('./types').ProjectDetail> {
-    return this.request(`/v1/projects/${encodeURIComponent(id)}?network=${this.workspaceId}`);
-  }
-
-  async recruitAgent(projectId: string, roleId: string, p?: { agentName?: string; workingDir?: string }): Promise<{ recruited: boolean; agentName: string }> {
-    return this.request(`/v1/projects/${encodeURIComponent(projectId)}/recruit`, {
-      method: 'POST',
-      body: JSON.stringify({ network: this.workspaceId, role_id: roleId, agent_name: p?.agentName, working_dir: p?.workingDir }),
-    });
-  }
-
-  async removeProjectAgent(projectId: string, agentName: string): Promise<{ removed: boolean }> {
-    return this.request(`/v1/projects/${encodeURIComponent(projectId)}/agents/remove`, {
-      method: 'POST',
-      body: JSON.stringify({ network: this.workspaceId, agent_name: agentName }),
-    });
   }
 
   async getA2APeerThread(channel: string): Promise<{ channel: string; messages: import('./types').PeerMessage[] }> {

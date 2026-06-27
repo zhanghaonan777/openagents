@@ -10,7 +10,6 @@ import { DelegateDialog } from '@/components/agents/delegate-dialog';
 import { colorFromName } from '@/lib/role-templates';
 import { timeAgoShort as timeAgo } from '@/lib/helpers';
 import { taskRequestText, taskArtifactText } from '@/lib/a2a';
-import { useProjectChannels, inProjectChannels } from '@/lib/use-project-scope';
 import { workspaceApi } from '@/lib/api';
 import { TaskDetail } from './task-detail';
 import type { A2ATask, A2ATaskState, TaskReviewState } from '@/lib/types';
@@ -229,7 +228,6 @@ function TaskCard({ task, flash, blocked, sub, isSubtask, onOpen, onChanged }: {
 
 export function TasksView() {
   const { a2aTasks, refreshA2ATasks, agents, currentUser } = useWorkspace();
-  const projectChannels = useProjectChannels();
   const { flashTaskId } = useLayout();
   const [detailId, setDetailId] = useState<string | null>(null);
   const [query, setQuery] = useState('');
@@ -300,7 +298,6 @@ export function TasksView() {
   const visible = useMemo(() => {
     const q = query.trim().toLowerCase();
     let list = a2aTasks.filter((t) => {
-      if (!inProjectChannels(projectChannels, t.channel)) return false;
       if (ownerFilter !== 'all' && t.contractorName !== ownerFilter) return false;
       if (q && !(`${taskRequestText(t)} ${t.contractorName}`.toLowerCase().includes(q))) return false;
       return true;
@@ -312,7 +309,7 @@ export function TasksView() {
       return sort === 'oldest' ? ta - tb : tb - ta;
     });
     return list;
-  }, [a2aTasks, query, ownerFilter, sort, projectChannels]);
+  }, [a2aTasks, query, ownerFilter, sort]);
 
   const done = a2aTasks.filter((t) => ['completed', 'failed', 'canceled', 'rejected'].includes(t.state)).length;
   const inProgress = a2aTasks.filter((t) => t.state === 'working').length;

@@ -4,7 +4,6 @@ import { useEffect, useState } from 'react';
 import { cn } from '@/lib/utils';
 import { ClipboardCheck, RefreshCw, Check, MessageSquareWarning, Eye, Inbox } from 'lucide-react';
 import { useWorkspace } from '@/lib/workspace-context';
-import { useProjectChannels, inProjectChannels } from '@/lib/use-project-scope';
 import { AgentAvatar } from '@/components/agents/agent-avatar';
 import { timeAgoShort as timeAgo } from '@/lib/helpers';
 import { taskRequestText, taskArtifactText } from '@/lib/a2a';
@@ -120,13 +119,11 @@ function Section({ title, tint, tasks, onChanged }: { title: string; tint: strin
  *  awaiting review, what's ready to be sent for review, and what was decided. */
 export function ReviewView() {
   const { a2aTasks, refreshA2ATasks } = useWorkspace();
-  const projectChannels = useProjectChannels();
   useEffect(() => { refreshA2ATasks(); }, [refreshA2ATasks]);
 
-  const scoped = a2aTasks.filter((t) => inProjectChannels(projectChannels, t.channel));
-  const pending = scoped.filter((t) => t.review?.state === 'pending');
-  const decided = scoped.filter((t) => t.review && t.review.state !== 'pending');
-  const ready = scoped.filter((t) => !t.review && t.delegator.startsWith('openagents:') &&
+  const pending = a2aTasks.filter((t) => t.review?.state === 'pending');
+  const decided = a2aTasks.filter((t) => t.review && t.review.state !== 'pending');
+  const ready = a2aTasks.filter((t) => !t.review && t.delegator.startsWith('openagents:') &&
     (t.state === 'working' || t.state === 'completed'));
 
   const empty = pending.length === 0 && decided.length === 0 && ready.length === 0;
