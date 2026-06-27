@@ -14,6 +14,7 @@ export interface Workspace {
 export interface WorkspaceAgent {
   agentName: string;
   role: string;
+  roleId: string | null;   // catalog role this agent was hired from (e.g. "backend-developer")
   agentType: string | null;
   serverHost: string | null;
   workingDir: string | null;
@@ -427,6 +428,7 @@ export interface EventPollResponse {
 export interface NetworkAgent {
   address: string;
   role: string;
+  role_id?: string | null;
   status: string;
   agent_type: string | null;
   server_host: string | null;
@@ -529,6 +531,7 @@ export function networkAgentToWorkspaceAgent(agent: NetworkAgent): WorkspaceAgen
   return {
     agentName: agent.address.replace(/^openagents:/, ''),
     role: agent.role,
+    roleId: agent.role_id ?? null,
     agentType: agent.agent_type || null,
     serverHost: agent.server_host || null,
     workingDir: agent.working_dir || null,

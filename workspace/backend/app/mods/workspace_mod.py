@@ -70,6 +70,7 @@ async def _handle_agent_join(event: Event, ctx: PipelineContext) -> Optional[Eve
     now = datetime.now(timezone.utc)
 
     agent_type = event.payload.get("agent_type") if event.payload else None
+    role_id = event.payload.get("role_id") if event.payload else None
     server_host = event.payload.get("server_host") if event.payload else None
     working_dir = event.payload.get("working_dir") if event.payload else None
 
@@ -86,6 +87,8 @@ async def _handle_agent_join(event: Event, ctx: PipelineContext) -> Optional[Eve
         existing.session_started_at = now
         if agent_type and not existing.agent_type:
             existing.agent_type = agent_type
+        if role_id and not existing.role_id:
+            existing.role_id = role_id
         if server_host:
             existing.server_host = server_host
         if working_dir:
@@ -101,6 +104,7 @@ async def _handle_agent_join(event: Event, ctx: PipelineContext) -> Optional[Eve
             workspace_id=workspace.id,
             agent_name=agent_name,
             role=role,
+            role_id=role_id,
             agent_type=agent_type,
             server_host=server_host,
             working_dir=working_dir,

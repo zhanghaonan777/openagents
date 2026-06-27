@@ -99,7 +99,8 @@ class WorkspaceMember(Base):
 
     workspace_id = Column(UUID(as_uuid=False), ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False)
     agent_name = Column(Text, nullable=False)
-    role = Column(Text, default="member")           # master | member | observer
+    role = Column(Text, default="member")           # master | member | observer (workspace role)
+    role_id = Column(Text, nullable=True)            # catalog role id this agent was hired from, e.g. "backend-developer"
     agent_type = Column(Text, nullable=True)          # "claude", "openclaw", etc.
     server_host = Column(Text, nullable=True)          # hostname/IP where agent runs
     working_dir = Column(Text, nullable=True)          # working directory on the server

@@ -46,6 +46,7 @@ class JoinRequest(BaseModel):
     token: str                         # workspace token
     network: Optional[str] = None      # workspace ID or slug
     agent_type: Optional[str] = None   # "claude", "openclaw", etc.
+    role_id: Optional[str] = None      # catalog role id, e.g. "backend-developer"
     server_host: Optional[str] = None  # hostname/IP where agent runs
     working_dir: Optional[str] = None  # working directory on the server
 
@@ -181,6 +182,8 @@ def join_network(
     payload = {"agent_name": body.agent_name}
     if body.agent_type:
         payload["agent_type"] = body.agent_type
+    if body.role_id:
+        payload["role_id"] = body.role_id
     if body.server_host:
         payload["server_host"] = body.server_host
     if body.working_dir:
@@ -396,6 +399,7 @@ def discover(
         agents.append({
             "address": f"openagents:{m.agent_name}",
             "role": m.role,
+            "role_id": m.role_id,
             "status": status,
             "agent_type": m.agent_type,
             "server_host": m.server_host,

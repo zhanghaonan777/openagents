@@ -130,6 +130,7 @@ def _format_workspace(ws: Workspace, members: list, now: datetime) -> dict:
         agents.append({
             "agentName": m.agent_name,
             "role": m.role,
+            "roleId": m.role_id,
             "agentType": m.agent_type,
             "status": status,
             "description": m.description,

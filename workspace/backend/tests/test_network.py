@@ -24,6 +24,21 @@ class TestJoinNetwork:
         assert data["role"] == "member"
         assert data["status"] == "online"
 
+    def test_join_records_role_id_and_surfaces_in_discover(self, client, workspace):
+        """An agent hired from a catalog role records role_id, and discover
+        surfaces it so the live agent traces back to its role template."""
+        resp = client.post("/v1/join", json={
+            "agent_name": "agent-be",
+            "token": workspace["token"],
+            "network": workspace["id"],
+            "role_id": "backend-developer",
+        })
+        assert resp.status_code == 200, resp.text
+        d = client.get("/v1/discover", params={"network": workspace["id"]},
+                       headers={"X-Workspace-Token": workspace["token"]}).json()["data"]
+        agent = next(a for a in d["agents"] if a["address"] == "openagents:agent-be")
+        assert agent["role_id"] == "backend-developer"
+
     def test_join_existing_agent_reconnects(self, client, workspace):
         """Rejoining sets agent back to online."""
         # Join

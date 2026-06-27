@@ -625,6 +625,7 @@ class WorkspaceApi {
     return discovery.agents.map((a) => ({
       agentName: a.address.replace(/^openagents:/, ''),
       role: a.role,
+      roleId: a.role_id ?? null,
       agentType: a.agent_type || null,
       serverHost: a.server_host || null,
       workingDir: a.working_dir || null,

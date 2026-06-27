@@ -30,6 +30,7 @@ CREATE TABLE IF NOT EXISTS workspace_members (
     workspace_id        uuid        NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
     agent_name          text        NOT NULL,
     role                text        DEFAULT 'member',
+    role_id             text,
     agent_type          text,
     server_host         text,
     working_dir         text,
@@ -444,4 +445,4 @@ CREATE TABLE IF NOT EXISTS alembic_version (
     CONSTRAINT alembic_version_pkc PRIMARY KEY (version_num)
 );
 INSERT INTO alembic_version (version_num)
-SELECT '028' WHERE NOT EXISTS (SELECT 1 FROM alembic_version);
+SELECT '029' WHERE NOT EXISTS (SELECT 1 FROM alembic_version);
