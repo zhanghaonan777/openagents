@@ -1,14 +1,10 @@
 # -*- coding: utf-8 -*-
-"""Timeline — the project's institutional memory.
+"""Timeline — the project's institutional memory (a faithful event archive).
 
-`POST /v1/timeline/capture` distills a discussion thread into a structured
-DECISION milestone via the LLM (title + one-line verdict + rationale +
-participants) so a concluded discussion is remembered instead of scrolling away.
+`POST /v1/timeline/capture` records a discussion thread's concluding message
+VERBATIM as a DECISION milestone — no AI rewriting, so the archive is accurate.
 `GET /v1/timeline` lists the milestones, newest first.
 """
-import json
-import logging
-import re
 from typing import Optional
 
 from fastapi import APIRouter, Depends, Header
@@ -16,14 +12,12 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app import llm
 from app.database import get_db
 from app.models import Channel, EventRecord, Milestone
 from app.response import ResponseCode, json_response, success_response
 from app.routers.network import _resolve_workspace, _verify_workspace_access
 
 router = APIRouter(prefix="/v1/timeline", tags=["timeline"])
-logger = logging.getLogger(__name__)
 
 
 def _auth(db, network, token, authorization):
@@ -54,20 +48,6 @@ class CaptureRequest(BaseModel):
     channel: str                 # channel name (the thread to distill)
     kind: str = "decision"
     created_by: Optional[str] = None
-
-
-_DISTILL_PROMPT = """You are recording a team discussion as a structured DECISION for a project timeline.
-
-Discussion (oldest first):
-{history}
-
-Return ONLY a JSON object (no markdown fences, no prose) with exactly these keys:
-- "title": short noun phrase naming the decision, <= 12 words
-- "summary": the FINAL decision in ONE sentence (empty string "" if no clear decision was reached)
-- "detail": 2-4 sentences of rationale — key tradeoffs and who argued what (markdown allowed)
-- "participants": array of the participant names that took part
-
-Answer in the SAME language as the discussion."""
 
 
 def _channel_history(db, workspace_id, channel_name: str, limit: int = 40):
@@ -101,21 +81,6 @@ def _channel_history(db, workspace_id, channel_name: str, limit: int = 40):
     return "\n".join(lines), speakers, last_agent
 
 
-def _parse_json(raw: str) -> Optional[dict]:
-    raw = re.sub(r"^```(json)?|```$", "", raw.strip(), flags=re.MULTILINE).strip()
-    try:
-        obj = json.loads(raw)
-        return obj if isinstance(obj, dict) else None
-    except Exception:
-        m = re.search(r"\{.*\}", raw, flags=re.DOTALL)
-        if m:
-            try:
-                return json.loads(m.group(0))
-            except Exception:
-                return None
-        return None
-
-
 @router.post("/capture")
 def capture_milestone(
     body: CaptureRequest,
@@ -135,26 +100,13 @@ def capture_milestone(
     if not history:
         return json_response(ResponseCode.BAD_REQUEST, "Nothing to capture — the thread has no messages")
 
-    # Distill with the LLM when one is configured; otherwise fall back to the
-    # concluding agent message as the decision record (so capture always works).
-    data: dict = {}
-    if llm.available():
-        try:
-            data = _parse_json(llm.complete(_DISTILL_PROMPT.format(history=history), max_tokens=900)) or {}
-        except Exception as e:
-            logger.warning("timeline: LLM distill failed, using heuristic: %s", e)
-
-    title = (data.get("title") or "").strip() or (channel.title if channel else "Decision")
-    summary = (data.get("summary") or "").strip() or None
-    detail = (data.get("detail") or "").strip() or None
-    parts = data.get("participants")
-    if not isinstance(parts, list) or not parts:
-        parts = speakers
-
-    if not summary and not detail and last_agent:
-        # Heuristic: the last substantive agent message is the conclusion.
-        summary = last_agent.split("\n", 1)[0].lstrip("#* ").strip()[:220]
-        detail = last_agent[:1500]
+    # Faithful record — NO AI rewriting. The decision is the thread's concluding
+    # message, kept verbatim (summary = its first line, detail = the message as-is),
+    # so the timeline is an accurate archive, not an AI re-narration.
+    title = (channel.title if channel and channel.title else "Decision")
+    summary = last_agent.split("\n", 1)[0].lstrip("#* ").strip()[:220] if last_agent else None
+    detail = last_agent[:4000] if last_agent else None
+    parts = speakers
 
     m = Milestone(
         workspace_id=workspace.id,

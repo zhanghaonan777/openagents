@@ -1,11 +1,11 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
-import { Activity, RefreshCw, Brain, Terminal, MessageSquare, Send, AlertTriangle, Hash, X, CheckCircle2, ScrollText, Bell, ChevronDown, ChevronRight } from 'lucide-react';
+import { Activity, RefreshCw, Brain, Terminal, MessageSquare, Send, AlertTriangle, Hash, X, CheckCircle2, ScrollText, Bell, ChevronDown, ChevronRight, UserPlus, ClipboardCheck } from 'lucide-react';
 import { workspaceApi } from '@/lib/api';
 import { eventToMessage, type WorkspaceMessage, type Milestone } from '@/lib/types';
 import { classifyActivity, type ActivityKind, type ActivityMeta } from '@/lib/agent-activity';
-import { stripDelegationPlumbing } from '@/lib/a2a';
+import { stripDelegationPlumbing, taskRequestText } from '@/lib/a2a';
 import { timeAgoShort } from '@/lib/helpers';
 import { useWorkspace } from '@/lib/workspace-context';
 import { useLayout } from '@/components/layout/layout-context';
@@ -46,7 +46,7 @@ export function TimelineView() {
         </div>
       </div>
       {mode === 'timeline'
-        ? <ProjectJournal a2aTasks={a2aTasks} agentNames={agentNames} onOpenTasks={() => setViewMode('tasks')} />
+        ? <ProjectJournal a2aTasks={a2aTasks} agents={agents} agentNames={agentNames} onOpenTasks={() => setViewMode('tasks')} />
         : <ActivityLanes agents={agents} teamActivity={teamActivity} agentNames={agentNames} />}
     </div>
   );
@@ -54,8 +54,11 @@ export function TimelineView() {
 
 // ── Timeline mode: needs-attention strip + decision-milestone feed ──────────
 
-function ProjectJournal({ a2aTasks, agentNames, onOpenTasks }: {
+interface FeedEntry { id: string; ts: number; kind: 'decision' | 'join' | 'delegate' | 'done' | 'failed' | 'review'; title: string; sub?: string | null; who: string[]; detail?: string | null }
+
+function ProjectJournal({ a2aTasks, agents, agentNames, onOpenTasks }: {
   a2aTasks: ReturnType<typeof useWorkspace>['a2aTasks'];
+  agents: ReturnType<typeof useWorkspace>['agents'];
   agentNames: string[];
   onOpenTasks: () => void;
 }) {
@@ -102,6 +105,39 @@ function ProjectJournal({ a2aTasks, agentNames, onOpenTasks }: {
     return items;
   }, [a2aTasks]);
 
+  // The faithful event feed — real events only, no AI: decisions (verbatim),
+  // agent recruitment, and A2A task lifecycle (delegated / done / failed / review).
+  const entries = useMemo(() => {
+    const out: FeedEntry[] = [];
+    for (const m of milestones) {
+      out.push({ id: 'm:' + m.id, ts: m.createdAt ? Date.parse(m.createdAt) : 0, kind: 'decision', title: m.title, sub: m.summary, who: m.participants, detail: m.detail });
+    }
+    for (const a of agents) {
+      if (a.joinedAt) out.push({ id: 'j:' + a.agentName, ts: Date.parse(a.joinedAt), kind: 'join', title: `${a.agentName} 加入团队`, who: [a.agentName] });
+    }
+    for (const t of a2aTasks) {
+      if (t.deleted) continue;
+      for (const e of t.events || []) {
+        const ts = e.at ? Date.parse(e.at) : 0;
+        if (e.type === 'task_created') out.push({ id: 't:' + t.id + ':c', ts, kind: 'delegate', title: `委派任务给 ${t.contractorName}`, sub: taskRequestText(t)?.slice(0, 90), who: [t.contractorName] });
+        else if (e.type === 'status_changed' && e.detail === 'completed') out.push({ id: 't:' + t.id + ':d', ts, kind: 'done', title: `${t.contractorName} 完成任务`, who: [t.contractorName] });
+        else if (e.type === 'status_changed' && (e.detail === 'failed' || e.detail === 'rejected')) out.push({ id: 't:' + t.id + ':f', ts, kind: 'failed', title: `任务 ${e.detail} · ${t.contractorName}`, who: [t.contractorName] });
+        else if (e.type === 'review_approved') out.push({ id: 't:' + t.id + ':ra', ts, kind: 'review', title: `review 通过 · ${t.contractorName}`, who: [t.contractorName] });
+        else if (e.type === 'changes_requested') out.push({ id: 't:' + t.id + ':cr', ts, kind: 'review', title: `要求修改 · ${t.contractorName}`, who: [t.contractorName] });
+      }
+    }
+    return out.sort((a, b) => b.ts - a.ts);
+  }, [milestones, agents, a2aTasks]);
+
+  const ENTRY: Record<FeedEntry['kind'], { Icon: typeof CheckCircle2; cls: string }> = {
+    decision: { Icon: CheckCircle2, cls: 'text-emerald-500' },
+    join: { Icon: UserPlus, cls: 'text-indigo-500' },
+    delegate: { Icon: Send, cls: 'text-blue-500' },
+    done: { Icon: CheckCircle2, cls: 'text-emerald-500' },
+    failed: { Icon: AlertTriangle, cls: 'text-red-500' },
+    review: { Icon: ClipboardCheck, cls: 'text-amber-500' },
+  };
+
   return (
     <div className="flex-1 overflow-y-auto">
       {/* Needs attention */}
@@ -132,42 +168,35 @@ function ProjectJournal({ a2aTasks, agentNames, onOpenTasks }: {
         </div>
       )}
 
-      {/* Decision-milestone feed */}
-      {milestones.length === 0 ? (
+      {/* Faithful event feed (decisions / recruitment / task lifecycle) */}
+      {entries.length === 0 ? (
         <div className="flex flex-col items-center justify-center h-full gap-2 text-muted-foreground px-6 text-center">
           <ScrollText className="size-8 opacity-30" />
-          <p className="text-sm">还没有里程碑</p>
-          <p className="text-xs max-w-xs">在某个讨论收敛后,用「归档结论」把决定记下来 —— 它会作为决策里程碑出现在这里。</p>
+          <p className="text-sm">还没有事件</p>
+          <p className="text-xs max-w-xs">招募 agent、委派任务、或在讨论收敛后点「归档结论」—— 真实事件会按时间排在这里。</p>
         </div>
       ) : (
         <ol className="px-4 py-3 space-y-2">
-          {milestones.map((m) => {
-            const open = expanded === m.id;
+          {entries.map((e) => {
+            const { Icon, cls } = ENTRY[e.kind];
+            const open = expanded === e.id;
+            const canExpand = e.kind === 'decision' && !!e.detail;
             return (
-              <li key={m.id} className="rounded-xl border border-border bg-background overflow-hidden">
-                <button onClick={() => setExpanded(open ? null : m.id)} className="w-full text-left px-3.5 py-3 flex gap-3 hover:bg-muted/40 transition-colors">
-                  <CheckCircle2 className="size-4 text-emerald-500 shrink-0 mt-0.5" />
+              <li key={e.id} className="rounded-xl border border-border bg-background overflow-hidden">
+                <button onClick={() => canExpand && setExpanded(open ? null : e.id)} className={cn('w-full text-left px-3.5 py-2.5 flex gap-3 transition-colors', canExpand && 'hover:bg-muted/40')}>
+                  <Icon className={cn('size-4 shrink-0 mt-0.5', cls)} />
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2">
-                      <span className="text-[10px] uppercase tracking-wide font-semibold text-emerald-600 dark:text-emerald-400">{m.kind}</span>
-                      <span className="text-[10px] text-muted-foreground ml-auto shrink-0">{timeAgoShort(m.createdAt)}</span>
+                      <span className="text-[13px] font-medium truncate">{e.title}</span>
+                      <span className="text-[10px] text-muted-foreground ml-auto shrink-0">{timeAgoShort(e.ts ? new Date(e.ts).toISOString() : null)}</span>
+                      {canExpand && (open ? <ChevronDown className="size-3.5 text-muted-foreground shrink-0" /> : <ChevronRight className="size-3.5 text-muted-foreground shrink-0" />)}
                     </div>
-                    <div className="text-[13.5px] font-semibold mt-0.5 truncate">{m.title}</div>
-                    {m.summary && <p className={cn('text-[12px] text-muted-foreground mt-0.5', !open && 'line-clamp-2')}>{m.summary}</p>}
-                    <div className="flex items-center gap-1.5 mt-1.5">
-                      <div className="flex -space-x-1.5">
-                        {m.participants.slice(0, 4).map((p) => (
-                          <div key={p} className="ring-2 ring-background rounded-full"><AgentAvatar name={p} size={16} /></div>
-                        ))}
-                      </div>
-                      <span className="text-[10px] text-muted-foreground">{m.participants.length} 人</span>
-                      <span className="ml-auto text-muted-foreground">{open ? <ChevronDown className="size-3.5" /> : <ChevronRight className="size-3.5" />}</span>
-                    </div>
+                    {e.sub && <p className={cn('text-[12px] text-muted-foreground mt-0.5', !open && 'line-clamp-2')}>{e.sub}</p>}
                   </div>
                 </button>
-                {open && m.detail && (
+                {open && canExpand && e.detail && (
                   <div className="px-3.5 pb-3 pt-1 border-t border-border/60 text-[12.5px] leading-relaxed">
-                    <MarkdownContent content={m.detail} agentNames={agentNames} />
+                    <MarkdownContent content={e.detail} agentNames={agentNames} />
                   </div>
                 )}
               </li>
