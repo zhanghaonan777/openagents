@@ -32,7 +32,6 @@ import { toast } from 'sonner';
 import type { WorkspaceCollaborator } from '@/lib/types';
 import { useOpenAgentsAuth } from '@/lib/openagents-auth-context';
 import { NewThreadDialog } from '@/components/threads/new-thread-dialog';
-import { ProjectSwitcher } from '@/components/projects/project-switcher';
 import { DelegateDialog } from '@/components/agents/delegate-dialog';
 
 // ── Navigation button helper ──
@@ -244,10 +243,6 @@ export function SidebarContent() {
     <>
       <div className="flex flex-col h-full">
         <ScrollArea className="flex-1 min-h-0">
-          {/* Project switcher (project mode) — pick / create the active project */}
-          <div className="px-3.5 pb-2.5">
-            <ProjectSwitcher />
-          </div>
           {/* New Thread button */}
           <div className="px-3.5 pb-3">
             <button
