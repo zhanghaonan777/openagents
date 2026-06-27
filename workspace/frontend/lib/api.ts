@@ -979,6 +979,18 @@ class WorkspaceApi {
     return this.request(`/v1/a2a/messages?${params}`);
   }
 
+  // ── Timeline (decision milestones) ──
+  async listTimeline(): Promise<{ milestones: import('./types').Milestone[] }> {
+    return this.request(`/v1/timeline?network=${this.workspaceId}`);
+  }
+
+  async captureMilestone(channel: string, createdBy?: string): Promise<import('./types').Milestone> {
+    return this.request('/v1/timeline/capture', {
+      method: 'POST',
+      body: JSON.stringify({ network: this.workspaceId, channel, ...(createdBy ? { created_by: createdBy } : {}) }),
+    });
+  }
+
   async getA2APeerThread(channel: string): Promise<{ channel: string; messages: import('./types').PeerMessage[] }> {
     const params = new URLSearchParams({ network: this.workspaceId, channel });
     return this.request(`/v1/a2a/messages?${params}`);

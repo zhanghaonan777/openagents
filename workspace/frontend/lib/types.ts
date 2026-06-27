@@ -488,6 +488,19 @@ export interface PaginationMeta {
   has_prev: boolean;
 }
 
+/** A timeline milestone — chiefly a distilled decision from a discussion. */
+export interface Milestone {
+  id: string;
+  kind: string;            // decision | note
+  title: string;
+  summary: string | null;
+  detail: string | null;
+  participants: string[];
+  channelId: string | null;
+  createdBy: string | null;
+  createdAt: string | null;
+}
+
 export interface MessagePollResponse {
   messages: WorkspaceMessage[];
   hasMore: boolean;
