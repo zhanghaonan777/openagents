@@ -284,3 +284,6 @@ _ref-agent-teams-ai/
 .swarm/
 **/.claude-flow/
 **/.swarm/
+
+# The frontend project-mode UI dir is real source — not the ignored runtime 'projects' dir above
+!workspace/frontend/components/projects/

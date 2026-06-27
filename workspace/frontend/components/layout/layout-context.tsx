@@ -47,6 +47,9 @@ interface LayoutState {
   /** Task id to briefly highlight on the board (set when jumping from a chat delegate card) */
   flashTaskId: string | null;
   setFlashTaskId: (id: string | null) => void;
+  /** Active project (project mode); null = no project filter (org-wide view) */
+  currentProjectId: string | null;
+  setCurrentProjectId: (id: string | null) => void;
 }
 
 const LayoutContext = createContext<LayoutState | undefined>(undefined);
@@ -71,6 +74,7 @@ export function LayoutProvider({ children }: { children: ReactNode }) {
   const [showBrowserPreview, setShowBrowserPreview] = useState(false);
   const [isRoleLibraryOpen, setIsRoleLibraryOpen] = useState(false);
   const [flashTaskId, setFlashTaskId] = useState<string | null>(null);
+  const [currentProjectId, setCurrentProjectId] = useState<string | null>(null);
 
   const openRoleLibrary = () => setIsRoleLibraryOpen(true);
   const closeRoleLibrary = () => setIsRoleLibraryOpen(false);
@@ -130,6 +134,8 @@ export function LayoutProvider({ children }: { children: ReactNode }) {
       closeRoleLibrary,
       flashTaskId,
       setFlashTaskId,
+      currentProjectId,
+      setCurrentProjectId,
     }}>
       <div data-slot="layout-wrapper" className="flex grow">
         <TooltipProvider delayDuration={0}>

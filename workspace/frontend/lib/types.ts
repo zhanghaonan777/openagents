@@ -484,6 +484,22 @@ export interface PaginationMeta {
   has_prev: boolean;
 }
 
+export interface Project {
+  id: string;
+  name: string;
+  goal: string | null;
+  status: string;
+  createdBy: string | null;
+  createdAt: string | null;
+  archivedAt: string | null;
+  threadCount: number;
+  team: string[];
+}
+
+export interface ProjectDetail extends Project {
+  threads: { name: string; title: string | null; lastEventAt: number | null }[];
+}
+
 export interface MessagePollResponse {
   messages: WorkspaceMessage[];
   hasMore: boolean;

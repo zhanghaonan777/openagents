@@ -959,6 +959,22 @@ class WorkspaceApi {
     return this.request(`/v1/a2a/messages?${params}`);
   }
 
+  // ── Projects (project mode) ──
+  async listProjects(): Promise<{ projects: import('./types').Project[] }> {
+    return this.request(`/v1/projects?network=${this.workspaceId}`);
+  }
+
+  async createProject(p: { name: string; goal?: string }): Promise<import('./types').Project> {
+    return this.request('/v1/projects', {
+      method: 'POST',
+      body: JSON.stringify({ network: this.workspaceId, name: p.name, goal: p.goal }),
+    });
+  }
+
+  async getProject(id: string): Promise<import('./types').ProjectDetail> {
+    return this.request(`/v1/projects/${encodeURIComponent(id)}?network=${this.workspaceId}`);
+  }
+
   async getA2APeerThread(channel: string): Promise<{ channel: string; messages: import('./types').PeerMessage[] }> {
     const params = new URLSearchParams({ network: this.workspaceId, channel });
     return this.request(`/v1/a2a/messages?${params}`);
