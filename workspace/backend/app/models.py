@@ -140,6 +140,7 @@ class Channel(Base):
     status = Column(Text, default="active")           # active | archived | deleted
     starred = Column(Boolean, default=False, server_default=text("FALSE"))
     last_event_at = Column(BigInteger, nullable=True)
+    project_id = Column(UUID(as_uuid=False), ForeignKey("projects.id", ondelete="SET NULL"), nullable=True)
     created_at = Column(DateTime(timezone=True), default=_now, server_default=text("NOW()"))
 
     workspace = relationship("Workspace", back_populates="channels")
@@ -166,6 +167,28 @@ class ChannelMember(Base):
 
     __table_args__ = (
         PrimaryKeyConstraint("channel_id", "agent_name"),
+    )
+
+
+class Project(Base):
+    """A project = a goal-scoped grouping of threads + (later) a recruited team.
+
+    Sits inside a workspace (the org). Threads point back via `channels.project_id`.
+    The recruited team and PM-driven recruitment land in a later phase.
+    """
+    __tablename__ = "projects"
+
+    id = Column(UUID(as_uuid=False), primary_key=True, default=_uuid, server_default=text("gen_random_uuid()"))
+    workspace_id = Column(UUID(as_uuid=False), ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False)
+    name = Column(Text, nullable=False)
+    goal = Column(Text, nullable=True)
+    status = Column(Text, default="active", server_default=text("'active'"))  # recruiting|active|paused|done|archived
+    created_by = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), default=_now, server_default=text("NOW()"))
+    archived_at = Column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        Index("idx_projects_workspace_status", "workspace_id", "status"),
     )
 
 
