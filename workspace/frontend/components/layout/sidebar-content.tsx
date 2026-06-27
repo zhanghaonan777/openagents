@@ -382,7 +382,7 @@ export function SidebarContent() {
             </p>
             <div className="space-y-0.5">
               <NavButton active={viewMode === 'threads'} icon={<MessageSquare className="size-[15px]" />} label="Threads" count={sessions.filter((s) => !s.sessionId.startsWith('routine:') && !s.sessionId.startsWith('dm-') && (!currentProjectId || s.projectId === currentProjectId)).length} onClick={() => setViewMode('threads')} />
-              {recentAgents.length > 0 && (
+              {agents.length > 0 && (
                 <>
                   <NavButton active={viewMode === 'tasks'} icon={<ListTodo className="size-[15px]" />} label="Tasks" count={todos.filter((t) => t.status === 'pending' || t.status === 'in_progress').length} onClick={() => setViewMode('tasks')} />
                   <NavButton active={viewMode === 'team'} icon={<Users className="size-[15px]" />} label="Team" alert={teamAttention} onClick={() => setViewMode('team')} />
@@ -399,7 +399,7 @@ export function SidebarContent() {
         </ScrollArea>
 
         {/* Workspace — persistent, org-level panels (same across every project) */}
-        {recentAgents.length > 0 && (
+        {agents.length > 0 && (
           <div className="shrink-0 px-2.5 pt-1.5">
             <p className="text-xs font-normal text-muted-foreground px-2 py-1 mb-0.5">Workspace</p>
             <div className="space-y-0.5">
@@ -412,7 +412,7 @@ export function SidebarContent() {
 
         {/* Bottom section — pinned to bottom */}
         <div className="shrink-0 px-2.5 pb-1">
-          {recentAgents.length === 0 ? (
+          {agents.length === 0 ? (
             <button
               onClick={() => setViewMode('connect')}
               className={cn(

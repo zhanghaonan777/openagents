@@ -26,7 +26,7 @@ import { EmptyState } from '@/components/chat/empty-state';
 import { RoleLibrary } from '@/components/agents/role-library';
 import type { RoleTemplate } from '@/lib/role-templates';
 import { toast } from 'sonner';
-import { useMemo } from 'react';
+import { useEffect, useMemo } from 'react';
 
 /**
  * Renders the role-library modal once at the shell level. The library is opened
@@ -110,9 +110,23 @@ function WorkspaceLoadingScreen() {
 }
 
 export function Wrapper() {
-  const { isMobile, viewMode, isAgentPanelOpen, isSidebarOpen, isDetailExpanded, mobilePane, splitBrowser, showBrowserPreview } = useLayout();
-  const { monitorMode, agents, loading } = useWorkspace();
+  const { isMobile, viewMode, isAgentPanelOpen, isSidebarOpen, isDetailExpanded, mobilePane, splitBrowser, showBrowserPreview, currentProjectId } = useLayout();
+  const { monitorMode, agents, loading, sessions, currentSessionId, setCurrentSessionId } = useWorkspace();
   const hasAgents = agents.length > 0;
+
+  // Keep the open thread consistent with the active project: when a project is
+  // selected and the current thread isn't filed under it, jump to that project's
+  // most recent thread (or clear → empty state). Without this the chat pane shows
+  // an orphan thread while the (project-filtered) list reads "No threads yet".
+  useEffect(() => {
+    if (!currentProjectId) return;                         // All projects → no filter
+    const cur = sessions.find((s) => s.sessionId === currentSessionId);
+    if (!cur || cur.projectId === currentProjectId) return; // unselected/DM or already in project
+    const next = sessions
+      .filter((s) => s.projectId === currentProjectId && s.status === 'active' && !s.sessionId.startsWith('dm-'))
+      .sort((a, b) => (b.lastEventAt || 0) - (a.lastEventAt || 0))[0];
+    setCurrentSessionId(next ? next.sessionId : null);
+  }, [currentProjectId, currentSessionId, sessions, setCurrentSessionId]);
 
   if (loading) {
     return <WorkspaceLoadingScreen />;
