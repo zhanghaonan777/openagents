@@ -134,6 +134,24 @@ class WorkspaceApi {
     });
   }
 
+  /** List workspaces (account-level — not scoped to the current workspace).
+   *  Each workspace is a "project" in the project=workspace model; the switcher
+   *  uses this to let the user move between their isolated workspaces. */
+  async listWorkspaces(creatorEmail?: string): Promise<Workspace[]> {
+    const qs = creatorEmail ? `?creator_email=${encodeURIComponent(creatorEmail)}` : '';
+    return this.request<Workspace[]>(`/v1/workspaces${qs}`);
+  }
+
+  /** Create a new workspace (a new isolated project). Returns its slug + token
+   *  so the caller can navigate into it and (for local/token auth) stash the
+   *  token to re-attach on later visits. */
+  async createWorkspace(opts: { name: string; creatorEmail?: string }): Promise<{ workspaceId: string; slug: string; name: string; token: string }> {
+    return this.request(`/v1/workspaces`, {
+      method: 'POST',
+      body: JSON.stringify({ name: opts.name, ...(opts.creatorEmail ? { creator_email: opts.creatorEmail } : {}) }),
+    });
+  }
+
   async updateMember(agentName: string, updates: { description?: string; role?: string; enabled_skills?: Record<string, boolean> }): Promise<unknown> {
     return this.request(`/v1/workspaces/${this.workspaceId}/members/${agentName}`, {
       method: 'PATCH',

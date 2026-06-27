@@ -4,7 +4,7 @@ import Image from 'next/image';
 import { PanelLeft } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useLayout } from './layout-context';
-import { ProjectSwitcher } from '@/components/projects/project-switcher';
+import { WorkspaceSwitcher } from '@/components/workspace/workspace-switcher';
 
 export function SidebarHeader() {
   const { sidebarToggle, isSidebarOpen } = useLayout();
@@ -25,8 +25,8 @@ export function SidebarHeader() {
         <Image src="/logo-black.png" alt="OpenAgents" width={32} height={32} className="size-full object-contain dark:hidden" />
         <Image src="/logo-white.png" alt="OpenAgents" width={32} height={32} className="size-full object-contain hidden dark:block" />
       </div>
-      {/* Top-level entity is the Project (org shows as the switcher subtitle). */}
-      <ProjectSwitcher />
+      {/* Top-level entity is the workspace = project (its own agents + isolated runtime). */}
+      <WorkspaceSwitcher />
     </div>
   );
 }
