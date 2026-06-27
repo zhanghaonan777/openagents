@@ -45,6 +45,19 @@ def test_capture_and_list_milestone(client, workspace):
     assert any(x["id"] == m["id"] for x in lr.json()["data"]["milestones"])
 
 
+def test_record_milestone_and_dedup(client, workspace):
+    body = {"network": workspace["id"], "kind": "decision", "title": "Auth: hybrid tokens",
+            "summary": "short access JWT + stateful refresh", "participants": ["pm"]}
+    r1 = client.post("/v1/timeline/milestones", json=body, headers=_hdr(workspace))
+    assert r1.status_code == 200, r1.text
+    id1 = r1.json()["data"]["id"]
+    # same title within 10 min → dedup returns the existing milestone, no duplicate
+    r2 = client.post("/v1/timeline/milestones", json={"network": workspace["id"], "title": "Auth: hybrid tokens"}, headers=_hdr(workspace))
+    assert r2.json()["data"]["id"] == id1
+    lr = client.get("/v1/timeline", params={"network": workspace["id"]}, headers=_hdr(workspace))
+    assert sum(1 for m in lr.json()["data"]["milestones"] if m["title"] == "Auth: hybrid tokens") == 1
+
+
 def test_capture_empty_thread_400(client, workspace):
     ch = _make_channel(client, workspace)
     r = client.post("/v1/timeline/capture", json={"network": workspace["id"], "channel": ch}, headers=_hdr(workspace))

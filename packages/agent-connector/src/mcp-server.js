@@ -272,6 +272,21 @@ function buildToolDefs(disabledModules) {
           },
         },
       },
+      {
+        name: 'workspace_record_milestone',
+        description: 'Record a DECISION/milestone to the project timeline (the team\'s institutional memory). Call this the moment a discussion reaches a conclusion — e.g. when you, as coordinator, make the final call — so the decision is archived instead of scrolling away. Write the decision in your own words; it is stored verbatim.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            title: { type: 'string', description: 'Short phrase naming the decision, e.g. "Auth approach"' },
+            summary: { type: 'string', description: 'The decision in one sentence' },
+            detail: { type: 'string', description: 'Rationale / key tradeoffs (markdown allowed)' },
+            participants: { type: 'array', items: { type: 'string' }, description: 'Agent names that took part' },
+            kind: { type: 'string', enum: ['decision', 'note'], description: 'Defaults to decision' },
+          },
+          required: ['title'],
+        },
+      },
     );
   }
 
@@ -824,6 +839,14 @@ class McpServer {
           return `${icon} ${t.content} (${t.assignee || 'unassigned'})`;
         });
         return text(lines.join('\n'));
+      }
+
+      case 'workspace_record_milestone': {
+        const m = await this.ws.recordMilestone(this.workspaceId, this.channelName, this.token, {
+          kind: args.kind, title: args.title, summary: args.summary, detail: args.detail,
+          participants: args.participants, createdBy: `openagents:${this.agentName}`,
+        });
+        return text(`Recorded to timeline: ${m.title}`);
       }
 
       case 'workspace_create_timer': {

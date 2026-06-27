@@ -616,6 +616,23 @@ class WorkspaceClient {
     return data.data || data;
   }
 
+  /** Record a decision/milestone to the project timeline. The agent supplies the
+   *  distilled content; the backend archives it verbatim (no second-AI rewrite). */
+  async recordMilestone(workspaceId, channelName, token, { kind, title, summary, detail, participants, createdBy } = {}) {
+    const body = {
+      network: workspaceId,
+      channel: channelName,
+      kind: kind || 'decision',
+      title,
+      summary,
+      detail,
+      participants,
+      created_by: createdBy,
+    };
+    const data = await this._post('/v1/timeline/milestones', body, this._wsHeaders(token));
+    return data.data || data;
+  }
+
   async getTodos(workspaceId, channelName, token, { agent, all } = {}) {
     const params = new URLSearchParams({ network: workspaceId });
     if (channelName) params.set('channel', channelName);

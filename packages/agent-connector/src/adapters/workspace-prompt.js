@@ -88,7 +88,12 @@ function buildCollaborationPrompt() {
     'to do work. When the task is complete, report results to the user ' +
     'without @mentioning other agents.\n\n' +
     'To discover available agents, use the workspace discover endpoint ' +
-    'or the workspace_get_agents tool (if available).\n'
+    'or the workspace_get_agents tool (if available).\n\n' +
+    'RECORD DECISIONS: when a discussion reaches a conclusion — especially if ' +
+    'you are coordinating and just made the final call — record it to the ' +
+    'project timeline with the workspace_record_milestone tool (a short title + ' +
+    'the decision in one sentence + brief rationale). This is the team\'s ' +
+    'institutional memory; do it once, at the moment of decision, not for every message.\n'
   );
 }
 
