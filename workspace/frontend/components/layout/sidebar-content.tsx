@@ -289,21 +289,19 @@ export function SidebarContent() {
                   >
                     <AgentAvatar name={agent.agentName} size={20} status={agent.status} showStatus className={cn('mt-px shrink-0', offline && 'opacity-50')} />
                     <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-1.5">
-                        <span className={cn('text-[13px] font-normal truncate group-hover:text-primary', offline ? 'text-muted-foreground' : 'text-foreground')}>
+                      <div className="flex items-center gap-1.5 min-w-0">
+                        <span className={cn('text-[13px] font-normal truncate min-w-0 group-hover:text-primary', offline ? 'text-muted-foreground' : 'text-foreground')}>
                           {agent.agentName}
                         </span>
                         {working && <span className="size-1.5 rounded-full bg-blue-500 animate-pulse shrink-0" title="working" />}
-                        {agent.agentCode && (
-                          <span className="ml-auto shrink-0 text-[9px] font-mono text-muted-foreground bg-muted border border-border/60 rounded px-1 py-px tabular-nums" title={`Agent id #${agent.agentCode}`}>
-                            #{agent.agentCode}
-                          </span>
-                        )}
                       </div>
                       {working && act?.label ? (
                         <div className="text-[10px] text-blue-500/80 font-mono truncate leading-tight">{act.label}</div>
                       ) : (
                         <div className="text-[10px] truncate leading-tight">
+                          {agent.agentCode && (
+                            <span className="font-mono font-semibold text-primary" title={`Agent id #${agent.agentCode}`}>#{agent.agentCode} · </span>
+                          )}
                           {offline ? (
                             <span className="text-muted-foreground/70">offline{agent.lastHeartbeatAt ? ` · last seen ${timeAgo(agent.lastHeartbeatAt)}` : ''}</span>
                           ) : (
