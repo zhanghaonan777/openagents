@@ -50,7 +50,12 @@ export function WorkspaceSwitcher() {
   }, [workspace?.slug, token]);
 
   const load = useCallback(async () => {
-    try { setWorkspaces(await workspaceApi.listWorkspaces(user?.email)); } catch { /* best-effort */ }
+    // Only list workspaces scoped to a signed-in identity. Without an email
+    // (local/token auth) the backend list endpoint isn't owner-scoped and would
+    // return every workspace in the system, so don't request it — the current
+    // workspace still shows in the header and "+ New Project" still works.
+    if (!user?.email) { setWorkspaces([]); return; }
+    try { setWorkspaces(await workspaceApi.listWorkspaces(user.email)); } catch { /* best-effort */ }
   }, [user?.email]);
   useEffect(() => { if (open) load(); }, [open, load]);
 

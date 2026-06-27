@@ -134,9 +134,11 @@ def _format_workspace(ws: Workspace, members: list, now: datetime) -> dict:
             "roleId": m.role_id,
             "agentCode": agent_code(ws.id, m.agent_name),
             "agentType": m.agent_type,
+            "serverHost": m.server_host,
             "status": status,
             "description": m.description,
             "workingDir": m.working_dir,
+            "enabledSkills": m.enabled_skills,
             "lastHeartbeatAt": m.last_heartbeat.isoformat() if m.last_heartbeat else None,
             "joinedAt": m.joined_at.isoformat() if m.joined_at else None,
         })
@@ -257,7 +259,14 @@ def list_workspaces(
     agent_name: Optional[str] = Query(None),
     db: Session = Depends(get_db),
 ):
-    """List workspaces, optionally filtered by creator or agent membership."""
+    """List workspaces filtered by creator or agent membership.
+
+    A scoping filter is REQUIRED: without one this would enumerate every
+    workspace in the system. Return empty rather than leak the global list.
+    """
+    if not creator_email and not agent_name:
+        return success_response([])
+
     query = select(Workspace).where(Workspace.status != "deleted")
 
     if creator_email:
