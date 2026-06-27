@@ -75,6 +75,14 @@ async def _handle_agent_join(event: Event, ctx: PipelineContext) -> Optional[Eve
     server_host = event.payload.get("server_host") if event.payload else None
     working_dir = event.payload.get("working_dir") if event.payload else None
 
+    # If no explicit role_id was supplied (e.g. the launcher doesn't send one yet),
+    # default it from the agent name when that name is itself a catalog role id —
+    # agents are conventionally named after the role they fill (backend-developer…).
+    if not role_id:
+        from app.routers.roles import KNOWN_ROLE_IDS
+        if agent_name in KNOWN_ROLE_IDS:
+            role_id = agent_name
+
     # Rotate session on every join. Any prior client holding the old
     # session_id (ghost adapter, duplicate daemon) gets rejected when it
     # next heartbeats or posts, which tells it to stop.

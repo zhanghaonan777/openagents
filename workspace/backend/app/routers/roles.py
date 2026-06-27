@@ -25,6 +25,10 @@ with open(_ROLES_PATH, encoding="utf-8") as _f:
     _ROLES = json.load(_f)
 _CATEGORIES = sorted({r["cat"] for r in _ROLES})
 
+# All catalog role ids (e.g. "backend-developer"). Used to default a member's
+# role_id from its agent name when an explicit role_id wasn't supplied on join.
+KNOWN_ROLE_IDS = frozenset(r["id"] for r in _ROLES)
+
 
 def _score(role: dict, q: str) -> int:
     """Relevance of a role to free-text query q (higher = better, 0 = no match)."""

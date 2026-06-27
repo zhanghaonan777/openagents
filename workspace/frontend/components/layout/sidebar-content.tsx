@@ -297,12 +297,20 @@ export function SidebarContent() {
                       </div>
                       {working && act?.label ? (
                         <div className="text-[10px] text-blue-500/80 font-mono truncate leading-tight">{act.label}</div>
-                      ) : offline ? (
-                        <div className="text-[10px] text-muted-foreground/70 truncate leading-tight">
-                          offline{agent.lastHeartbeatAt ? ` · last seen ${timeAgo(agent.lastHeartbeatAt)}` : ''}
-                        </div>
                       ) : (
-                        <div className="text-[10px] text-emerald-600/80 dark:text-emerald-500/80 truncate leading-tight">online</div>
+                        <div className="text-[10px] truncate leading-tight">
+                          {agent.roleId && (
+                            <>
+                              <span className="font-mono text-muted-foreground/70" title={`Role id: ${agent.roleId}`}>{agent.roleId}</span>
+                              <span className="text-muted-foreground/40"> · </span>
+                            </>
+                          )}
+                          {offline ? (
+                            <span className="text-muted-foreground/70">offline{agent.lastHeartbeatAt ? ` · last seen ${timeAgo(agent.lastHeartbeatAt)}` : ''}</span>
+                          ) : (
+                            <span className="text-emerald-600/80 dark:text-emerald-500/80">online</span>
+                          )}
+                        </div>
                       )}
                     </div>
                     <button

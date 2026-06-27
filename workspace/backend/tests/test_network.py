@@ -39,6 +39,19 @@ class TestJoinNetwork:
         agent = next(a for a in d["agents"] if a["address"] == "openagents:agent-be")
         assert agent["role_id"] == "backend-developer"
 
+    def test_join_defaults_role_id_from_role_named_agent(self, client, workspace):
+        """No explicit role_id, but the agent is named after a catalog role →
+        role_id is defaulted from the name so the agent traces back to its role."""
+        client.post("/v1/join", json={
+            "agent_name": "backend-developer",
+            "token": workspace["token"],
+            "network": workspace["id"],
+        })
+        d = client.get("/v1/discover", params={"network": workspace["id"]},
+                       headers={"X-Workspace-Token": workspace["token"]}).json()["data"]
+        agent = next(a for a in d["agents"] if a["address"] == "openagents:backend-developer")
+        assert agent["role_id"] == "backend-developer"
+
     def test_join_existing_agent_reconnects(self, client, workspace):
         """Rejoining sets agent back to online."""
         # Join
