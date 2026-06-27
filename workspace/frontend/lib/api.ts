@@ -190,6 +190,7 @@ class WorkspaceApi {
     master?: string;
     participants?: string[];
     resumeFrom?: string;
+    projectId?: string | null;
   } = {}): Promise<WorkspaceSession> {
     const event = await this.sendEvent({
       type: 'network.channel.create',
@@ -200,6 +201,7 @@ class WorkspaceApi {
         ...(opts.master && { master: opts.master }),
         ...(opts.participants && { participants: opts.participants }),
         ...(opts.resumeFrom && { resume_from: opts.resumeFrom }),
+        ...(opts.projectId && { project_id: opts.projectId }),
       },
     });
 
@@ -216,6 +218,7 @@ class WorkspaceApi {
       master: opts.master || null,
       createdAt: new Date(event.timestamp).toISOString(),
       lastEventAt: null,
+      projectId: opts.projectId ?? null,
     };
   }
 

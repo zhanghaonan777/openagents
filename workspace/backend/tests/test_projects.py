@@ -33,6 +33,26 @@ def test_project_detail_scopes_threads(client, workspace):
     assert len(d["threads"]) == 1
 
 
+def test_discover_surfaces_channel_project_id(client, workspace):
+    """The discover endpoint must carry each channel's project_id so the thread
+    list can filter by the active project (project-mode-design §4)."""
+    pid = _create_project(client, workspace).json()["data"]["id"]
+    client.post("/v1/events", json={
+        "network": workspace["id"], "type": "network.channel.create",
+        "source": "human:user", "target": "core",
+        "payload": {"title": "scoped", "project_id": pid, "participants": ["alice"]},
+    }, headers=_hdr(workspace))
+    client.post("/v1/events", json={
+        "network": workspace["id"], "type": "network.channel.create",
+        "source": "human:user", "target": "core",
+        "payload": {"title": "unscoped", "participants": ["alice"]},
+    }, headers=_hdr(workspace))
+    chans = client.get("/v1/discover", params={"network": workspace["id"]}, headers=_hdr(workspace)).json()["data"]["channels"]
+    by_title = {c["title"]: c for c in chans}
+    assert by_title["scoped"]["project_id"] == pid
+    assert by_title["unscoped"]["project_id"] is None
+
+
 def test_project_recruit_and_remove(client, workspace):
     pid = _create_project(client, workspace).json()["data"]["id"]
     # recruit two roles

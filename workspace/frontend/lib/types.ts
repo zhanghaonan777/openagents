@@ -50,6 +50,7 @@ export interface WorkspaceSession {
   master: string | null;
   createdAt: string | null;
   lastEventAt: number | null; // unix ms timestamp of last message
+  projectId: string | null;   // project this thread is filed under (project mode)
 }
 
 /** Kinds of workspace message. `chat` = visible reply; `thinking`/`status`/
@@ -446,6 +447,7 @@ export interface NetworkChannel {
   last_event_at: number | null;
   status: string;
   starred: boolean;
+  project_id?: string | null;
 }
 
 export interface NetworkDiscovery {
@@ -576,5 +578,6 @@ export function networkChannelToSession(ch: NetworkChannel, workspaceId: string)
     master: ch.master,
     createdAt: ch.created_at ? new Date(ch.created_at).toISOString() : null,
     lastEventAt: ch.last_event_at,
+    projectId: ch.project_id ?? null,
   };
 }

@@ -109,7 +109,7 @@ export function SidebarContent() {
     if (agents.length >= 2) {
       setNewThreadOpen(true);
     } else {
-      createSession();
+      createSession({ projectId: currentProjectId });
       setViewMode('threads');
     }
   };
@@ -373,7 +373,7 @@ export function SidebarContent() {
               {currentProjectId ? 'Project' : 'Collaboration'}
             </p>
             <div className="space-y-0.5">
-              <NavButton active={viewMode === 'threads'} icon={<MessageSquare className="size-[15px]" />} label="Threads" count={sessions.filter((s) => !s.sessionId.startsWith('routine:') && !s.sessionId.startsWith('dm-')).length} onClick={() => setViewMode('threads')} />
+              <NavButton active={viewMode === 'threads'} icon={<MessageSquare className="size-[15px]" />} label="Threads" count={sessions.filter((s) => !s.sessionId.startsWith('routine:') && !s.sessionId.startsWith('dm-') && (!currentProjectId || s.projectId === currentProjectId)).length} onClick={() => setViewMode('threads')} />
               {recentAgents.length > 0 && (
                 <>
                   <NavButton active={viewMode === 'tasks'} icon={<ListTodo className="size-[15px]" />} label="Tasks" count={todos.filter((t) => t.status === 'pending' || t.status === 'in_progress').length} onClick={() => setViewMode('tasks')} />
@@ -503,7 +503,7 @@ export function SidebarContent() {
         agents={agents}
         sessions={sessions}
         onCreateThread={({ master, participants, resumeFrom }) => {
-          createSession({ master, participants, resumeFrom });
+          createSession({ master, participants, resumeFrom, projectId: currentProjectId });
           setViewMode('threads');
         }}
       />
