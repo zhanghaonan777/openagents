@@ -54,8 +54,15 @@ const LayoutContext = createContext<LayoutState | undefined>(undefined);
 export function LayoutProvider({ children }: { children: ReactNode }) {
   const isMobile = useIsMobile();
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
-  const [viewMode, setViewMode] = useState<ViewMode>('threads');
+  const [viewMode, _setViewMode] = useState<ViewMode>('threads');
   const [selectedAgentName, setSelectedAgentName] = useState<string | null>(null);
+  // Changing the view (e.g. clicking a left-nav item) also closes the agent
+  // profile panel — it's an overlay over the content pane, so otherwise it would
+  // stay open on top of the new view and only the X could dismiss it.
+  const setViewMode = (mode: ViewMode) => {
+    _setViewMode(mode);
+    setSelectedAgentName(null);
+  };
   const [mobilePane, setMobilePane] = useState<MobilePane>('list');
   const [isDetailExpanded, setIsDetailExpanded] = useState(false);
   const [splitBrowser, setSplitBrowser] = useState(() => {

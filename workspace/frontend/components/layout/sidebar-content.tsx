@@ -244,7 +244,10 @@ export function SidebarContent() {
   return (
     <>
       <div className="flex flex-col h-full">
-        <ScrollArea className="flex-1 min-h-0">
+        {/* viewportClassName forces Radix's inner table wrapper to block so a long
+            agent subtitle can't expand the content past the sidebar width (which
+            would overflow the w-full "New Thread" button). */}
+        <ScrollArea className="flex-1 min-h-0" viewportClassName="[&>div]:!block [&>div]:!min-w-0">
           {/* New Thread button */}
           <div className="px-3.5 pb-3">
             <button
