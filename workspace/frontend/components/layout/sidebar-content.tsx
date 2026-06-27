@@ -368,30 +368,39 @@ export function SidebarContent() {
               </>
             )}
 
-            {/* Collaboration */}
+            {/* Project — panels scoped to the active project (see project-mode-design §4) */}
             <p className="text-xs font-normal text-muted-foreground px-2 py-1.5 mb-0.5 mt-6">
-              Collaboration
+              {currentProjectId ? 'Project' : 'Collaboration'}
             </p>
             <div className="space-y-0.5">
               <NavButton active={viewMode === 'threads'} icon={<MessageSquare className="size-[15px]" />} label="Threads" count={sessions.filter((s) => !s.sessionId.startsWith('routine:') && !s.sessionId.startsWith('dm-')).length} onClick={() => setViewMode('threads')} />
               {recentAgents.length > 0 && (
                 <>
-                  <NavButton active={viewMode === 'files'} icon={<FileText className="size-[15px]" />} label="Files" count={files.length} onClick={() => setViewMode('files')} />
-                  <NavButton active={viewMode === 'browser'} icon={<Globe className="size-[15px]" />} label="Browser" count={browserTabs.length} onClick={() => setViewMode('browser')} />
-                  <NavButton active={viewMode === 'routines'} icon={<CalendarClock className="size-[15px]" />} label="Routines" count={routines.filter((r) => r.status === 'active').length} onClick={() => setViewMode('routines')} />
-                  <NavButton active={viewMode === 'knowledge'} icon={<BookOpen className="size-[15px]" />} label="Knowledge" count={knowledge.length} onClick={() => setViewMode('knowledge')} />
                   <NavButton active={viewMode === 'tasks'} icon={<ListTodo className="size-[15px]" />} label="Tasks" count={todos.filter((t) => t.status === 'pending' || t.status === 'in_progress').length} onClick={() => setViewMode('tasks')} />
                   <NavButton active={viewMode === 'team'} icon={<Users className="size-[15px]" />} label="Team" alert={teamAttention} onClick={() => setViewMode('team')} />
                   <NavButton active={viewMode === 'review'} icon={<ClipboardCheck className="size-[15px]" />} label="Review" alert={reviewsPending} onClick={() => setViewMode('review')} />
                   <NavButton active={viewMode === 'timeline'} icon={<Activity className="size-[15px]" />} label="Timeline" count={workingCount > 0 ? workingCount : undefined} onClick={() => setViewMode('timeline')} />
-                  <NavButton active={viewMode === 'inbox'} icon={<Inbox className="size-[15px]" />} label="Inbox" count={unreadNotificationCount > 0 ? unreadNotificationCount : undefined} onClick={() => setViewMode('inbox')} />
-                  <NavButton active={viewMode === 'skills'} icon={<Sparkles className="size-[15px]" />} label="Skill Hub" onClick={() => setViewMode('skills')} />
+                  <NavButton active={viewMode === 'files'} icon={<FileText className="size-[15px]" />} label="Files" count={files.length} onClick={() => setViewMode('files')} />
+                  <NavButton active={viewMode === 'browser'} icon={<Globe className="size-[15px]" />} label="Browser" count={browserTabs.length} onClick={() => setViewMode('browser')} />
+                  <NavButton active={viewMode === 'routines'} icon={<CalendarClock className="size-[15px]" />} label="Routines" count={routines.filter((r) => r.status === 'active').length} onClick={() => setViewMode('routines')} />
                 </>
               )}
             </div>
 
           </div>
         </ScrollArea>
+
+        {/* Workspace — persistent, org-level panels (same across every project) */}
+        {recentAgents.length > 0 && (
+          <div className="shrink-0 px-2.5 pt-1.5">
+            <p className="text-xs font-normal text-muted-foreground px-2 py-1 mb-0.5">Workspace</p>
+            <div className="space-y-0.5">
+              <NavButton active={viewMode === 'skills'} icon={<Sparkles className="size-[15px]" />} label="Skill Hub" onClick={() => setViewMode('skills')} />
+              <NavButton active={viewMode === 'knowledge'} icon={<BookOpen className="size-[15px]" />} label="Knowledge" count={knowledge.length} onClick={() => setViewMode('knowledge')} />
+              <NavButton active={viewMode === 'inbox'} icon={<Inbox className="size-[15px]" />} label="Inbox" count={unreadNotificationCount > 0 ? unreadNotificationCount : undefined} onClick={() => setViewMode('inbox')} />
+            </div>
+          </div>
+        )}
 
         {/* Bottom section — pinned to bottom */}
         <div className="shrink-0 px-2.5 pb-1">
