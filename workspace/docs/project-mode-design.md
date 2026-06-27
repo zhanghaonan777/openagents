@@ -141,12 +141,17 @@ search returns); **human approves** the PM's team in v1.
 
 Done: role catalog API; Project + ProjectAgent + channels.project_id (migrations
 027/028); recruit/remove; project switcher as the top header; sidebar roster scoped
-to the project's team; "Add role" recruits into the active project.
+to the project's team; "Add role" recruits into the active project; sidebar nav split
+into Project vs Workspace groups; **Threads scoped** end-to-end (discover serializes
+`project_id`, new threads filed under the active project); **Tasks/Review/Files
+scoped** via `useProjectChannels()` (derive a channel→project link from the threads;
+channel-less items show only under All projects); sidebar Review/Team badges scoped.
 
 Next, in order:
-1. **Scope the rest of the project panels** by `currentProjectId` — Tasks, Review,
-   Timeline, Files (and group the persistent ones — Skill Hub/Connect/Inbox — at the
-   sidebar bottom). Needs `discover`/list responses to carry `project_id`.
+1. **Scope the last two project panels** — Timeline (agent-lane based → filter lanes
+   to the project's team roster) and Browser (filter tabs by their channel). Both use
+   a different key than the channel→project derivation above. Routines similar (by
+   `channelName`).
 2. **PM recruitment loop** — `search_roles`/`propose_team` MCP tools + a
    propose→approve→recruit wizard on "New Project".
 3. **Settle the isolation fork (§2)** — launcher provisioning of per-project runtimes
