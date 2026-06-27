@@ -435,6 +435,22 @@ CREATE TABLE IF NOT EXISTS channel_human_members (
 );
 CREATE INDEX IF NOT EXISTS idx_channel_human_members_email ON channel_human_members (user_email);
 
+-- Timeline milestones (distilled decisions from discussion threads)
+CREATE TABLE IF NOT EXISTS milestones (
+    id              uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+    workspace_id    uuid        NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+    channel_id      uuid        REFERENCES channels(id) ON DELETE SET NULL,
+    kind            text        NOT NULL DEFAULT 'decision',
+    title           text        NOT NULL,
+    summary         text,
+    detail          text,
+    participants    jsonb,
+    created_by      text,
+    source_event_id text,
+    created_at      timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_milestones_workspace_created ON milestones (workspace_id, created_at);
+
 -- ===========================================================================
 -- Alembic stamp — schema is at head; backend's `alembic upgrade head` no-ops.
 -- Update '025' to match the latest revision in
@@ -445,4 +461,4 @@ CREATE TABLE IF NOT EXISTS alembic_version (
     CONSTRAINT alembic_version_pkc PRIMARY KEY (version_num)
 );
 INSERT INTO alembic_version (version_num)
-SELECT '029' WHERE NOT EXISTS (SELECT 1 FROM alembic_version);
+SELECT '030' WHERE NOT EXISTS (SELECT 1 FROM alembic_version);

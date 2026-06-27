@@ -217,6 +217,30 @@ class ProjectAgent(Base):
     )
 
 
+class Milestone(Base):
+    """A meaningful project event for the timeline — chiefly a *decision*: the
+    distilled conclusion of a discussion (title + one-line verdict + rationale +
+    who took part), so the project keeps an institutional memory of what was
+    decided and why. The source thread is linked via channel_id."""
+    __tablename__ = "milestones"
+
+    id = Column(UUID(as_uuid=False), primary_key=True, default=_uuid, server_default=text("gen_random_uuid()"))
+    workspace_id = Column(UUID(as_uuid=False), ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False)
+    channel_id = Column(UUID(as_uuid=False), ForeignKey("channels.id", ondelete="SET NULL"), nullable=True)
+    kind = Column(Text, default="decision", server_default=text("'decision'"))  # decision | note
+    title = Column(Text, nullable=False)
+    summary = Column(Text, nullable=True)        # one-line conclusion
+    detail = Column(Text, nullable=True)         # fuller rationale (markdown)
+    participants = Column(JSONB, nullable=True)  # ["product-manager", ...]
+    created_by = Column(Text, nullable=True)     # "human:..." | "openagents:..."
+    source_event_id = Column(Text, nullable=True)  # the concluding message event
+    created_at = Column(DateTime(timezone=True), default=_now, server_default=text("NOW()"))
+
+    __table_args__ = (
+        Index("idx_milestones_workspace_created", "workspace_id", "created_at"),
+    )
+
+
 class ChannelHumanMember(Base):
     """Per-channel human participant — Slack-style thread membership.
 
