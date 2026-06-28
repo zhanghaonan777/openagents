@@ -154,7 +154,7 @@ export function SidebarContent() {
   // ── Collapsed sidebar ──
   if (!isSidebarOpen) {
     return (
-      <div className="flex flex-col h-full">
+      <div className="flex flex-col flex-1 min-h-0">
         <div className="flex justify-center px-2.5 py-1">
           <Tooltip>
             <TooltipTrigger asChild>
@@ -243,7 +243,7 @@ export function SidebarContent() {
   // ── Expanded sidebar ──
   return (
     <>
-      <div className="flex flex-col h-full">
+      <div className="flex flex-col flex-1 min-h-0">
         {/* viewportClassName forces Radix's inner table wrapper to block so a long
             agent subtitle can't expand the content past the sidebar width (which
             would overflow the w-full "New Thread" button). */}
@@ -347,7 +347,7 @@ export function SidebarContent() {
                   <Users className="size-3 inline-block mr-1 -mt-0.5" />
                   Online ({onlineUsers.length})
                 </p>
-                <div className="space-y-0.5">
+                <div className="space-y-0.5 max-h-32 overflow-y-auto">
                   {onlineUsers.map((u) => (
                     <div
                       key={u.id}
@@ -382,20 +382,22 @@ export function SidebarContent() {
               )}
             </div>
 
+            {/* Workspace — persistent, org-level panels. Inside the scroll area
+                (not pinned) so the account/settings row at the bottom can't get
+                pushed off-screen on a short window. */}
+            {agents.length > 0 && (
+              <>
+                <p className="text-xs font-normal text-muted-foreground px-2 py-1.5 mb-0.5 mt-6">Workspace</p>
+                <div className="space-y-0.5">
+                  <NavButton active={viewMode === 'skills'} icon={<Sparkles className="size-[15px]" />} label="Skill Hub" onClick={() => setViewMode('skills')} />
+                  <NavButton active={viewMode === 'knowledge'} icon={<BookOpen className="size-[15px]" />} label="Knowledge" count={knowledge.length} onClick={() => setViewMode('knowledge')} />
+                  <NavButton active={viewMode === 'inbox'} icon={<Inbox className="size-[15px]" />} label="Inbox" count={unreadNotificationCount > 0 ? unreadNotificationCount : undefined} onClick={() => setViewMode('inbox')} />
+                </div>
+              </>
+            )}
+
           </div>
         </ScrollArea>
-
-        {/* Workspace — persistent, org-level panels (same across every project) */}
-        {agents.length > 0 && (
-          <div className="shrink-0 px-2.5 pt-1.5">
-            <p className="text-xs font-normal text-muted-foreground px-2 py-1 mb-0.5">Workspace</p>
-            <div className="space-y-0.5">
-              <NavButton active={viewMode === 'skills'} icon={<Sparkles className="size-[15px]" />} label="Skill Hub" onClick={() => setViewMode('skills')} />
-              <NavButton active={viewMode === 'knowledge'} icon={<BookOpen className="size-[15px]" />} label="Knowledge" count={knowledge.length} onClick={() => setViewMode('knowledge')} />
-              <NavButton active={viewMode === 'inbox'} icon={<Inbox className="size-[15px]" />} label="Inbox" count={unreadNotificationCount > 0 ? unreadNotificationCount : undefined} onClick={() => setViewMode('inbox')} />
-            </div>
-          </div>
-        )}
 
         {/* Bottom section — pinned to bottom */}
         <div className="shrink-0 px-2.5 pb-1">
