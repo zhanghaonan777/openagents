@@ -620,31 +620,9 @@ class WorkspaceApi {
   // Agent management (stubs — not yet event-native)
   // ---------------------------------------------------------------------------
 
-  async listAgents(): Promise<WorkspaceAgent[]> {
-    const discovery = await this.discover();
-    return discovery.agents.map((a) => ({
-      agentName: a.address.replace(/^openagents:/, ''),
-      role: a.role,
-      roleId: a.role_id ?? null,
-      agentCode: a.agent_code ?? null,
-      agentType: a.agent_type || null,
-      serverHost: a.server_host || null,
-      workingDir: a.working_dir || null,
-      description: a.description || null,
-      enabledSkills: a.enabled_skills || null,
-      status: a.status,
-      lastHeartbeatAt: null,
-      joinedAt: null,
-    }));
-  }
-
   /** Fetch the catalog of supported agent client types. */
   async getAgentCatalog(): Promise<AgentCatalogEntry[]> {
     return this.request<AgentCatalogEntry[]>('/v1/agent-catalog');
-  }
-
-  async updateAgentRole(_agentName: string, _role: string): Promise<WorkspaceAgent> {
-    throw new Error('Agent role management is not yet available in event-native mode');
   }
 
   async removeAgent(agentName: string): Promise<void> {

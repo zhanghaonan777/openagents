@@ -466,8 +466,9 @@ export function WorkspaceProvider({
     } catch (e) {
       const msg = e instanceof Error ? e.message : 'Failed to load workspace';
       // Self-heal: a deleted/unknown workspace should drop out of this browser's
-      // switcher list instead of lingering as a broken entry.
-      if (/\b404\b/.test(msg)) forgetWorkspace(workspaceId);
+      // switcher list. Match the status prefix (request() throws "API <status>: …")
+      // — NOT any "404" in the body, which would nuke the token on an unrelated error.
+      if (/^API 404\b/.test(msg)) forgetWorkspace(workspaceId);
       setError(msg);
     }
   }, [workspaceId]);

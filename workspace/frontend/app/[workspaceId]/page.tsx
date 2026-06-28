@@ -42,10 +42,16 @@ function WorkspaceLoadingSplash() {
 }
 
 function setWorkspaceCookie(slug: string, token: string) {
+  if (typeof window === 'undefined') return;
   const maxAge = 30 * 24 * 60 * 60;
-  const shared = `path=/;max-age=${maxAge};secure;samesite=lax;domain=.openagents.org`;
-  document.cookie = `oa_workspace=${encodeURIComponent(JSON.stringify({ slug, token }))};${shared}`;
-  document.cookie = `oa_has_workspace=1;${shared}`;
+  // Host-aware: only scope to the prod apex on openagents.org, and only mark
+  // `secure` over https — otherwise (localhost/http) the browser rejects the
+  // cookie and the write is silently dead.
+  const onProd = window.location.hostname.endsWith('openagents.org');
+  const secure = window.location.protocol === 'https:' ? ';secure' : '';
+  const attrs = `path=/;max-age=${maxAge}${secure};samesite=lax${onProd ? ';domain=.openagents.org' : ''}`;
+  document.cookie = `oa_workspace=${encodeURIComponent(JSON.stringify({ slug, token }))};${attrs}`;
+  document.cookie = `oa_has_workspace=1;${attrs}`;
 }
 
 function IdentityGate({ children }: { children: React.ReactNode }) {
