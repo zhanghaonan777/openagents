@@ -23,15 +23,20 @@ from app.routers.network import _resolve_workspace, _verify_workspace_access
 router = APIRouter(prefix="/v1/timeline", tags=["timeline"])
 
 
-def _recent_dup(db, workspace_id, channel_id, title) -> Optional[Milestone]:
-    """A same-thread, same-title milestone from the last 10 min — so a double
-    capture (manual + agent, or two clicks) doesn't create duplicates."""
+def _recent_dup(db, workspace_id, channel_id, summary) -> Optional[Milestone]:
+    """A same-thread milestone with the IDENTICAL summary from the last 10 min, so
+    a double record (two clicks, or manual+agent of the same conclusion) doesn't
+    duplicate — while a genuinely NEW conclusion (different summary) still records.
+    Keying on the title would either drop new conclusions (title = thread name is
+    constant) or never cross-match paths; the summary is the actual decision text."""
+    if not summary:
+        return None  # no content to compare → never dedup (don't silently drop)
     cutoff = datetime.now(timezone.utc) - timedelta(minutes=10)
     return db.execute(
         select(Milestone).where(
             Milestone.workspace_id == workspace_id,
             Milestone.channel_id == channel_id,
-            Milestone.title == title,
+            Milestone.summary == summary,
             Milestone.created_at >= cutoff,
         ).order_by(Milestone.created_at.desc())
     ).scalars().first()
@@ -122,7 +127,9 @@ def capture_milestone(
     # so the timeline is an accurate archive, not an AI re-narration.
     title = (channel.title if channel and channel.title else "Decision")[:200]
     cid = channel.id if channel else None
-    dup = _recent_dup(db, workspace.id, cid, title)
+    summary = last_agent.split("\n", 1)[0].lstrip("#* ").strip()[:220] if last_agent else None
+    detail = last_agent[:4000] if last_agent else None
+    dup = _recent_dup(db, workspace.id, cid, summary)
     if dup:
         return success_response(_serialize(dup))
 
@@ -131,8 +138,8 @@ def capture_milestone(
         channel_id=cid,
         kind=body.kind,
         title=title,
-        summary=last_agent.split("\n", 1)[0].lstrip("#* ").strip()[:220] if last_agent else None,
-        detail=last_agent[:4000] if last_agent else None,
+        summary=summary,
+        detail=detail,
         participants=speakers,
         created_by=body.created_by,
     )
@@ -173,7 +180,8 @@ def record_milestone(
         cid = ch.id if ch else None
 
     title = (body.title or "Decision").strip()[:200]
-    dup = _recent_dup(db, workspace.id, cid, title)
+    summary = (body.summary or "").strip() or None
+    dup = _recent_dup(db, workspace.id, cid, summary)
     if dup:
         return success_response(_serialize(dup))
 
@@ -182,7 +190,7 @@ def record_milestone(
         channel_id=cid,
         kind=body.kind,
         title=title,
-        summary=(body.summary or "").strip() or None,
+        summary=summary,
         detail=(body.detail or "").strip() or None,
         participants=body.participants if isinstance(body.participants, list) else None,
         created_by=body.created_by,
