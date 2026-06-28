@@ -8,30 +8,16 @@ import { useOpenAgentsAuth } from '@/lib/openagents-auth-context';
 import { workspaceApi } from '@/lib/api';
 import { cn } from '@/lib/utils';
 import type { Workspace } from '@/lib/types';
+import { stashWorkspace, listStashedWorkspaces } from '@/lib/ws-tokens';
 
 // In the project=workspace model each workspace IS a project: its own agents,
 // threads and isolated runtime. This switcher moves between them. Switching is a
-// full navigation to /<slug> so the WorkspaceProvider re-initialises cleanly.
-// Under Firebase auth the bearer token authorises every owned workspace; for
-// local/token auth we re-attach a per-slug token stashed in this browser (we
-// only have a workspace's token at create time or for the one we're in now).
+// full navigation to a CLEAN /<slug> URL — the token is resolved from this
+// browser's per-project stash (see lib/ws-tokens), not pinned to the link. Under
+// Firebase auth the bearer token authorises every owned workspace instead.
 
-const TOKEN_STORE = 'oa_ws_tokens';
-
-function readTokens(): Record<string, string> {
-  try { return JSON.parse(localStorage.getItem(TOKEN_STORE) || '{}'); } catch { return {}; }
-}
-function stashToken(slug: string, token: string) {
-  try {
-    const m = readTokens();
-    if (m[slug] === token) return;
-    m[slug] = token;
-    localStorage.setItem(TOKEN_STORE, JSON.stringify(m));
-  } catch { /* ignore quota/availability */ }
-}
 function navigateTo(slug: string) {
-  const t = readTokens()[slug];
-  window.location.href = t ? `/${slug}?token=${encodeURIComponent(t)}` : `/${slug}`;
+  window.location.href = `/${slug}`;
 }
 
 export function WorkspaceSwitcher() {
@@ -43,19 +29,26 @@ export function WorkspaceSwitcher() {
   const [name, setName] = useState('');
   const [busy, setBusy] = useState(false);
 
-  // Remember the current workspace's token so we can navigate back to it later
-  // (local/token auth). Harmless under Firebase auth.
+  // Remember the current workspace (token + name) so the switcher can list and
+  // navigate back to it later under local/token auth. Harmless under Firebase.
   useEffect(() => {
-    if (workspace?.slug && token) stashToken(workspace.slug, token);
-  }, [workspace?.slug, token]);
+    if (workspace?.slug) stashWorkspace(workspace.slug, token || undefined, workspace.name);
+  }, [workspace?.slug, workspace?.name, token]);
 
   const load = useCallback(async () => {
-    // Only list workspaces scoped to a signed-in identity. Without an email
-    // (local/token auth) the backend list endpoint isn't owner-scoped and would
-    // return every workspace in the system, so don't request it — the current
-    // workspace still shows in the header and "+ New Project" still works.
-    if (!user?.email) { setWorkspaces([]); return; }
-    try { setWorkspaces(await workspaceApi.listWorkspaces(user.email)); } catch { /* best-effort */ }
+    // Signed-in: scope the list to the account (authoritative).
+    if (user?.email) {
+      try { setWorkspaces(await workspaceApi.listWorkspaces(user.email)); } catch { /* best-effort */ }
+      return;
+    }
+    // Local/token auth (no account): the backend list isn't owner-scoped, so
+    // don't enumerate the world — instead list the workspaces THIS browser has
+    // tokens for (ones you've visited/created), which is safe and lets you switch.
+    setWorkspaces(listStashedWorkspaces().map((w) => ({
+      workspaceId: w.slug, slug: w.slug, name: w.name || w.slug, creatorEmail: null,
+      settings: {}, browserfabricApiKey: null, status: 'active',
+      createdAt: null, lastActivityAt: null, agents: [],
+    } as Workspace)));
   }, [user?.email]);
   useEffect(() => { if (open) load(); }, [open, load]);
 
@@ -65,7 +58,7 @@ export function WorkspaceSwitcher() {
     setBusy(true);
     try {
       const ws = await workspaceApi.createWorkspace({ name: n, creatorEmail: user?.email });
-      stashToken(ws.slug, ws.token);
+      stashWorkspace(ws.slug, ws.token, ws.name);
       toast.success(`Workspace "${ws.name}" created`);
       navigateTo(ws.slug);  // full navigation into the new (isolated) workspace
     } catch (e) {

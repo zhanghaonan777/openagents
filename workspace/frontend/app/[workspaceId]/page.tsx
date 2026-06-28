@@ -1,11 +1,12 @@
 'use client';
 
-import { use, Suspense, useEffect } from 'react';
+import { use, Suspense, useEffect, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { WorkspaceProvider, useWorkspace } from '@/lib/workspace-context';
 import { LayoutProvider } from '@/components/layout/layout-context';
 import { Wrapper } from '@/components/layout/wrapper';
 import { useOpenAgentsAuth } from '@/lib/openagents-auth-context';
+import { stashWorkspace, readWorkspaceToken } from '@/lib/ws-tokens';
 
 function WorkspaceLoadingSplash() {
   return (
@@ -61,16 +62,28 @@ function IdentityGate({ children }: { children: React.ReactNode }) {
 
 function WorkspaceContent({ workspaceId }: { workspaceId: string }) {
   const searchParams = useSearchParams();
-  const token = searchParams.get('token');
+  const urlToken = searchParams.get('token');
   const { user, idToken, loading: authLoading, isOpenAgentsDomain, signIn } = useOpenAgentsAuth();
 
+  // Resolve the access token: a `?token=` in the URL (which we also remember),
+  // else a token this browser already holds for this project — so switching is a
+  // clean `/<slug>` URL with no token pinned to it. undefined = still resolving.
+  const [token, setToken] = useState<string | null | undefined>(undefined);
   useEffect(() => {
-    if (token) {
-      setWorkspaceCookie(workspaceId, token);
+    if (urlToken) {
+      stashWorkspace(workspaceId, urlToken);
+      setWorkspaceCookie(workspaceId, urlToken);
+      setToken(urlToken);
+    } else {
+      setToken(readWorkspaceToken(workspaceId) ?? null);
     }
-  }, [workspaceId, token]);
+  }, [workspaceId, urlToken]);
 
-  // Has workspace token in URL — use it directly
+  if (token === undefined) {
+    return <WorkspaceLoadingSplash />;  // resolving the local token for this project
+  }
+
+  // Have a workspace token (from URL or this browser's stash) — use it directly
   if (token) {
     return (
       <WorkspaceProvider workspaceId={workspaceId} token={token} bearerToken={idToken || undefined}>

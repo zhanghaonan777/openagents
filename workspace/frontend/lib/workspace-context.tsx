@@ -6,6 +6,7 @@ import { capture } from './analytics';
 import { useOpenAgentsAuth } from './openagents-auth-context';
 import { generateUserId, getStoredIdentity, storeIdentity } from './identity';
 import { networkAgentToWorkspaceAgent, networkChannelToSession, eventToMessage } from './types';
+import { forgetWorkspace } from './ws-tokens';
 
 /** Live "what is each agent doing right now" — derived from the newest events. */
 export interface TeamStatus { working: boolean; label: string }
@@ -463,9 +464,13 @@ export function WorkspaceProvider({
       setAgents(ws.agents);
       setError(null);
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to load workspace');
+      const msg = e instanceof Error ? e.message : 'Failed to load workspace';
+      // Self-heal: a deleted/unknown workspace should drop out of this browser's
+      // switcher list instead of lingering as a broken entry.
+      if (/\b404\b/.test(msg)) forgetWorkspace(workspaceId);
+      setError(msg);
     }
-  }, []);
+  }, [workspaceId]);
 
   // Track last known event timestamps per channel for change detection
   const lastKnownEventAtRef = React.useRef<Record<string, number | null>>({});
