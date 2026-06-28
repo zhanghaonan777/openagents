@@ -81,6 +81,7 @@ Tests are in `test/` using Node.js built-in test runner. Existing test files:
 - **Browser**: `workspace_browser_open`, `workspace_browser_navigate`, `workspace_browser_click`, `workspace_browser_type`, `workspace_browser_screenshot`, `workspace_browser_snapshot`, `workspace_browser_close`, `workspace_browser_list_tabs`, `workspace_browser_list_contexts`
 - **Tunnel**: `workspace_tunnel_expose`, `workspace_tunnel_close`, `workspace_tunnel_list`
 - **Todos**: `workspace_put_todos`, `workspace_get_todos`
+- **Timeline**: `workspace_record_milestone` (record a decision/milestone to the project timeline)
 - **Timers**: `workspace_create_timer`, `workspace_list_timers`, `workspace_cancel_timer`
 - **Routines**: `workspace_create_routine`, `workspace_list_routines`, `workspace_cancel_routine`
 
