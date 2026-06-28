@@ -141,7 +141,6 @@ class Channel(Base):
     status = Column(Text, default="active")           # active | archived | deleted
     starred = Column(Boolean, default=False, server_default=text("FALSE"))
     last_event_at = Column(BigInteger, nullable=True)
-    project_id = Column(UUID(as_uuid=False), ForeignKey("projects.id", ondelete="SET NULL"), nullable=True)
     created_at = Column(DateTime(timezone=True), default=_now, server_default=text("NOW()"))
 
     workspace = relationship("Workspace", back_populates="channels")
@@ -168,52 +167,6 @@ class ChannelMember(Base):
 
     __table_args__ = (
         PrimaryKeyConstraint("channel_id", "agent_name"),
-    )
-
-
-class Project(Base):
-    """A project = a goal-scoped grouping of threads + (later) a recruited team.
-
-    Sits inside a workspace (the org). Threads point back via `channels.project_id`.
-    The recruited team and PM-driven recruitment land in a later phase.
-    """
-    __tablename__ = "projects"
-
-    id = Column(UUID(as_uuid=False), primary_key=True, default=_uuid, server_default=text("gen_random_uuid()"))
-    workspace_id = Column(UUID(as_uuid=False), ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False)
-    name = Column(Text, nullable=False)
-    goal = Column(Text, nullable=True)
-    status = Column(Text, default="active", server_default=text("'active'"))  # recruiting|active|paused|done|archived
-    created_by = Column(Text, nullable=True)
-    created_at = Column(DateTime(timezone=True), default=_now, server_default=text("NOW()"))
-    archived_at = Column(DateTime(timezone=True), nullable=True)
-
-    __table_args__ = (
-        Index("idx_projects_workspace_status", "workspace_id", "status"),
-    )
-
-
-class ProjectAgent(Base):
-    """A role recruited into a project — the project's own team member.
-
-    The catalog role (``role_id``) is the template; this row is the hire. The same
-    role can be recruited into different projects as separate, isolated instances
-    (each with its own ``working_dir``). Logical membership lives here; launching
-    the actual per-project runtime is the daemon's job (see docs/launcher-followups).
-    """
-    __tablename__ = "project_agents"
-
-    id = Column(UUID(as_uuid=False), primary_key=True, default=_uuid, server_default=text("gen_random_uuid()"))
-    project_id = Column(UUID(as_uuid=False), ForeignKey("projects.id", ondelete="CASCADE"), nullable=False)
-    role_id = Column(Text, nullable=True)        # catalog role id, e.g. "backend-developer"
-    agent_name = Column(Text, nullable=False)    # the member's handle within this project
-    working_dir = Column(Text, nullable=True)
-    status = Column(Text, default="active", server_default=text("'active'"))  # active | removed
-    created_at = Column(DateTime(timezone=True), default=_now, server_default=text("NOW()"))
-
-    __table_args__ = (
-        Index("idx_project_agents_project", "project_id"),
-        UniqueConstraint("project_id", "agent_name", name="uq_project_agent"),
     )
 
 

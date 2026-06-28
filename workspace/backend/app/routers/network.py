@@ -432,7 +432,6 @@ def discover(
             "last_event_at": c.last_event_at,
             "status": c.status or "active",
             "starred": bool(c.starred) if c.starred is not None else False,
-            "project_id": c.project_id,
         })
 
     return success_response({

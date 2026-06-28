@@ -46,36 +46,6 @@ CREATE TABLE IF NOT EXISTS workspace_members (
 );
 
 -- ===========================================================================
--- Projects (goal-scoped grouping of threads; channels point back via project_id)
--- ===========================================================================
-CREATE TABLE IF NOT EXISTS projects (
-    id            uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
-    workspace_id  uuid        NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
-    name          text        NOT NULL,
-    goal          text,
-    status        text        NOT NULL DEFAULT 'active',
-    created_by    text,
-    created_at    timestamptz NOT NULL DEFAULT now(),
-    archived_at   timestamptz
-);
-CREATE INDEX IF NOT EXISTS idx_projects_workspace_status ON projects (workspace_id, status);
-
--- ===========================================================================
--- Project agents (a role recruited into a project — the project's own team)
--- ===========================================================================
-CREATE TABLE IF NOT EXISTS project_agents (
-    id           uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
-    project_id   uuid        NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-    role_id      text,
-    agent_name   text        NOT NULL,
-    working_dir  text,
-    status       text        NOT NULL DEFAULT 'active',
-    created_at   timestamptz NOT NULL DEFAULT now(),
-    CONSTRAINT uq_project_agent UNIQUE (project_id, agent_name)
-);
-CREATE INDEX IF NOT EXISTS idx_project_agents_project ON project_agents (project_id);
-
--- ===========================================================================
 -- Channels (named event streams / threads)
 -- ===========================================================================
 CREATE TABLE IF NOT EXISTS channels (
@@ -90,7 +60,6 @@ CREATE TABLE IF NOT EXISTS channels (
     status              text        DEFAULT 'active',
     starred             boolean     NOT NULL DEFAULT false,
     last_event_at       bigint,
-    project_id          uuid        REFERENCES projects(id) ON DELETE SET NULL,
     created_at          timestamptz NOT NULL DEFAULT now()
 );
 CREATE UNIQUE INDEX IF NOT EXISTS uq_channels_ws_name ON channels (workspace_id, name);
@@ -461,4 +430,4 @@ CREATE TABLE IF NOT EXISTS alembic_version (
     CONSTRAINT alembic_version_pkc PRIMARY KEY (version_num)
 );
 INSERT INTO alembic_version (version_num)
-SELECT '030' WHERE NOT EXISTS (SELECT 1 FROM alembic_version);
+SELECT '031' WHERE NOT EXISTS (SELECT 1 FROM alembic_version);

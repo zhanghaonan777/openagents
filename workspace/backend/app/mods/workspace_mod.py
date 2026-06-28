@@ -311,7 +311,6 @@ async def _handle_channel_create(event: Event, ctx: PipelineContext) -> Optional
         created_by=event.source,
         master_agent=payload.get("master"),
         resume_from=payload.get("resume_from"),
-        project_id=payload.get("project_id"),
         status="active",
     )
     db.add(channel)

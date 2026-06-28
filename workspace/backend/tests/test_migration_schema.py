@@ -140,6 +140,11 @@ def _alembic_shape() -> tuple[SchemaShape, str]:
     unique_constraints: set[str] = set()
     revisions: set[str] = set()
     down_revisions: set[str] = set()
+    # Drops, so the net shape reflects tables/columns later migrations remove.
+    table_uniques: dict[str, set[str]] = {}
+    dropped_tables: set[str] = set()
+    dropped_columns: set[tuple[str, str]] = set()
+    dropped_indexes: set[str] = set()
 
     for path in ALEMBIC_VERSIONS_DIR.glob("*.py"):
         tree = ast.parse(path.read_text())
@@ -152,7 +157,10 @@ def _alembic_shape() -> tuple[SchemaShape, str]:
             if "down_revision" in target_names and isinstance(node.value, ast.Constant) and node.value.value:
                 down_revisions.add(node.value.value)
 
-        for call in [node for node in ast.walk(tree) if isinstance(node, ast.Call)]:
+        # Only the upgrade() path defines the live schema — downgrade() mirrors it
+        # in reverse and would otherwise cancel every create/drop out.
+        upgrade_fn = next((n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "upgrade"), None)
+        for call in ([n for n in ast.walk(upgrade_fn) if isinstance(n, ast.Call)] if upgrade_fn else []):
             if _is_call(call, "op.create_table"):
                 table = _literal_arg(call, 0)
                 if not table:
@@ -167,6 +175,7 @@ def _alembic_shape() -> tuple[SchemaShape, str]:
                         name = _keyword_literal(arg, "name")
                         if isinstance(name, str):
                             unique_constraints.add(name)
+                            table_uniques.setdefault(table, set()).add(name)
             elif _is_call(call, "op.add_column"):
                 table = _literal_arg(call, 0)
                 if table and len(call.args) > 1 and isinstance(call.args[1], ast.Call):
@@ -183,6 +192,29 @@ def _alembic_shape() -> tuple[SchemaShape, str]:
                 name = _literal_arg(call, 0)
                 if name:
                     unique_constraints.add(name)
+            elif _is_call(call, "op.drop_table"):
+                name = _literal_arg(call, 0)
+                if name:
+                    dropped_tables.add(name)
+            elif _is_call(call, "op.drop_column"):
+                table = _literal_arg(call, 0)
+                col = _literal_arg(call, 1)
+                if table and col:
+                    dropped_columns.add((table, col))
+            elif _is_call(call, "op.drop_index"):
+                name = _literal_arg(call, 0)
+                if name:
+                    dropped_indexes.add(name)
+
+    # Apply drops: a table dropped later removes its columns + its unique
+    # constraints; explicit column/index drops remove those entries.
+    for t in dropped_tables:
+        tables.discard(t)
+        columns = {(tt, c) for (tt, c) in columns if tt != t}
+        for u in table_uniques.get(t, ()):
+            unique_constraints.discard(u)
+    columns -= dropped_columns
+    indexes -= dropped_indexes
 
     heads = revisions - down_revisions
     assert len(heads) == 1, f"expected one Alembic head, got {sorted(heads)}"
