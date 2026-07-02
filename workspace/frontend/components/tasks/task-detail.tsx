@@ -93,7 +93,8 @@ export function TaskDetail({ task, onClose, onChanged }: { task: A2ATask; onClos
     setSubText('');
     setSubContractor('');
     await act(() => workspaceApi.createA2ASubtask(task.id, {
-      source: `human:${currentUser?.name || currentUser?.id || 'you'}`,
+      // Stable identity — matches createA2ATask in workspace-context (human:<id>).
+      source: `human:${currentUser.id}`,
       contractor,
       text,
     }));
@@ -106,7 +107,8 @@ export function TaskDetail({ task, onClose, onChanged }: { task: A2ATask; onClos
     const rt = replyTo;
     setReplyTo(null);
     await act(() => workspaceApi.addA2AComment(task.id, {
-      author: `human:${currentUser?.name || currentUser?.id || 'you'}`,
+      // Stable identity — matches createA2ATask in workspace-context (human:<id>).
+      author: `human:${currentUser.id}`,
       text,
       replyTo: rt || undefined,
     }));
@@ -282,7 +284,7 @@ export function TaskDetail({ task, onClose, onChanged }: { task: A2ATask; onClos
                         className="inline-flex items-center gap-1.5 text-[12px] font-semibold px-3 py-1.5 rounded-lg bg-emerald-500/90 text-white hover:bg-emerald-500 disabled:opacity-50">
                         <Check className="size-3.5" /> Approve
                       </button>
-                      <button disabled={busy} onClick={() => { const comment = window.prompt('What changes are needed?') || undefined; act(() => workspaceApi.requestA2AReviewChanges(task.id, { comment })); }}
+                      <button disabled={busy} onClick={() => { const comment = window.prompt('What changes are needed?'); if (comment === null) return; act(() => workspaceApi.requestA2AReviewChanges(task.id, { comment: comment || undefined })); }}
                         className="inline-flex items-center gap-1.5 text-[12px] font-semibold px-3 py-1.5 rounded-lg border border-red-300 dark:border-red-900/60 text-red-700 dark:text-red-400 hover:bg-red-500/10 disabled:opacity-50">
                         <MessageSquareWarning className="size-3.5" /> Request changes
                       </button>

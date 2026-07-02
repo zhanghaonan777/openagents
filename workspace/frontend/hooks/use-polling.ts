@@ -95,9 +95,19 @@ export function useMessagePolling({ sessionId, enabled = true, initialMessages }
           if (dmPair && sessionId) msg.sessionId = sessionId;
           return msg;
         }).reverse();
-        setMessages(historicMessages);
-        // newest_id is the most recent event (first in desc order)
-        newestIdRef.current = result.newest_id || historicMessages[historicMessages.length - 1].messageId;
+        // Merge rather than replace: SSE may have already appended live messages
+        // while this history request was in flight — dropping them would lose
+        // whatever arrived during the load. Keep those extras after the history.
+        setMessages((prev) => {
+          if (prev.length === 0) return historicMessages;
+          const historicIds = new Set(historicMessages.map((m) => m.messageId));
+          const extra = prev.filter((m) => !historicIds.has(m.messageId));
+          return extra.length > 0 ? [...historicMessages, ...extra] : historicMessages;
+        });
+        // Only seed the forward cursor if nothing has advanced it yet — never roll
+        // it back over messages SSE already observed.
+        const historicNewest = result.newest_id || historicMessages[historicMessages.length - 1].messageId;
+        if (!newestIdRef.current) newestIdRef.current = historicNewest;
         // oldest_id for loading older messages
         oldestIdRef.current = result.oldest_id || historicMessages[0].messageId;
         setHasOlder(result.has_more);
@@ -214,9 +224,12 @@ export function useMessagePolling({ sessionId, enabled = true, initialMessages }
     const isDM = sessionId.startsWith('dm:');
     let eventSource: EventSource | null = null;
     let timeout: ReturnType<typeof setTimeout> | null = null;
-    let usingSSE = false;
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+    let polling = false;
 
     const startPolling = () => {
+      if (polling) return;
+      polling = true;
       const getDelay = () => {
         const idle = Date.now() - lastActivityRef.current;
         return idle > 60_000 ? 15_000 : 2_000;
@@ -230,14 +243,19 @@ export function useMessagePolling({ sessionId, enabled = true, initialMessages }
       schedule();
     };
 
-    if (!isDM) {
+    // A transient SSE drop shouldn't permanently downgrade to polling — retry a
+    // few times with exponential backoff before giving up and falling back.
+    const MAX_SSE_RETRIES = 3;
+    let sseRetries = 0;
+
+    const connectSSE = () => {
       try {
         const sseUrl = workspaceApi.getSSEUrl(sessionId);
         eventSource = new EventSource(sseUrl);
-        usingSSE = true;
 
         eventSource.onmessage = (ev) => {
           if (sessionId !== currentSessionRef.current) return;
+          sseRetries = 0; // healthy stream — reset the backoff budget
           try {
             const event = JSON.parse(ev.data);
             const msg = eventToMessage(event);
@@ -254,12 +272,21 @@ export function useMessagePolling({ sessionId, enabled = true, initialMessages }
         eventSource.onerror = () => {
           eventSource?.close();
           eventSource = null;
-          usingSSE = false;
-          startPolling();
+          if (sseRetries < MAX_SSE_RETRIES) {
+            sseRetries += 1;
+            const backoff = Math.min(1_000 * 2 ** (sseRetries - 1), 8_000);
+            reconnectTimer = setTimeout(connectSSE, backoff);
+          } else {
+            startPolling();
+          }
         };
       } catch {
         startPolling();
       }
+    };
+
+    if (!isDM) {
+      connectSSE();
     } else {
       startPolling();
     }
@@ -267,6 +294,7 @@ export function useMessagePolling({ sessionId, enabled = true, initialMessages }
     return () => {
       if (eventSource) eventSource.close();
       if (timeout) clearTimeout(timeout);
+      if (reconnectTimer) clearTimeout(reconnectTimer);
     };
   }, [sessionId, enabled, poll, loadHistory]);
 

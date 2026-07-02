@@ -244,6 +244,10 @@ export function WorkspaceProvider({
   const [notifications, setNotifications] = useState<NotificationItem[]>([]);
   const [unreadNotificationCount, setUnreadNotificationCount] = useState(0);
   const [manuallyRenamedSessions, setManuallyRenamedSessions] = useState<Set<string>>(new Set());
+  // Mirror into a ref so refreshDiscovery (deps: [workspaceId]) reads the live set
+  // instead of the empty Set captured when the callback was first created.
+  const manuallyRenamedSessionsRef = useRef(manuallyRenamedSessions);
+  manuallyRenamedSessionsRef.current = manuallyRenamedSessions;
 
   // Auto-select browser tabs for split browser view:
   // - On first load: select the most recently created agent tab (if any)
@@ -362,7 +366,9 @@ export function WorkspaceProvider({
       });
     }
     setLastMessageBySession((prev) => {
-      if (!content && !prev[sessionId]) return prev;
+      // Never write an empty preview: it must not clobber an existing one (thread
+      // switches can momentarily report an empty last message) nor create a blank.
+      if (!content) return prev;
       const existing = prev[sessionId];
       const truncated = content.slice(0, 100);
       if (existing && existing.content === truncated && existing.senderName === senderName && existing.isStatus === isStatus) {
@@ -502,7 +508,7 @@ export function WorkspaceProvider({
           .map((s) => {
             const remote = updatedMap.get(s.sessionId)!;
             // Keep local title if user manually renamed in this browser session
-            const keepLocalTitle = manuallyRenamedSessions.has(s.sessionId);
+            const keepLocalTitle = manuallyRenamedSessionsRef.current.has(s.sessionId);
             return {
               ...s,
               title: keepLocalTitle ? s.title : remote.title,
@@ -1067,12 +1073,16 @@ export function WorkspaceProvider({
     setSessions((prev) =>
       prev.map((s) => (s.sessionId === sessionId ? { ...s, ...updates } : s))
     );
-    // If deleting the current session, switch away
-    const previousSessionId = currentSessionId;
+    // If deleting/archiving the current session, switch away. Capture the real
+    // pre-switch id from the ref (the `currentSessionId` closure const is frozen,
+    // so comparing it against itself in the catch would always be false).
+    const previousSessionId = currentSessionIdRef.current;
+    let switchedAway = false;
     if (updates.status === 'deleted' || updates.status === 'archived') {
-      if (currentSessionId === sessionId) {
+      if (currentSessionIdRef.current === sessionId) {
         const remaining = sessionsRef.current.filter((s) => s.sessionId !== sessionId && s.status === 'active');
         setCurrentSessionId(remaining.length > 0 ? remaining[0].sessionId : null);
+        switchedAway = true;
       }
     }
     try {
@@ -1083,9 +1093,10 @@ export function WorkspaceProvider({
         setSessions((prev) =>
           prev.map((s) => (s.sessionId === sessionId ? previousSession : s))
         );
-        if (previousSessionId !== currentSessionId) {
-          setCurrentSessionId(previousSessionId);
-        }
+      }
+      // Restore the previously-selected session if we navigated away from it.
+      if (switchedAway) {
+        setCurrentSessionId(previousSessionId);
       }
     }
   }, [currentSessionId]);

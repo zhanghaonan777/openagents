@@ -154,7 +154,9 @@ export function MonitorOverlay({ sessionId, session, initialMessages, open, onOp
             fileId: f.id,
             filename: f.filename,
             contentType: f.contentType,
-            url: workspaceApi.getFileUrl(f.id),
+            // Persisted metadata must not carry the workspace token — the renderer
+            // regenerates a token-bearing URL from fileId at display time.
+            url: workspaceApi.getFileUrl(f.id, { withToken: false }),
           }));
         }
 

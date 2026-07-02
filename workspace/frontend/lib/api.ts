@@ -380,10 +380,18 @@ class WorkspaceApi {
     };
   }
 
-  /** Get the download URL for a file. */
-  getFileUrl(fileId: string): string {
+  /**
+   * Get the download URL for a file.
+   *
+   * By default the workspace token is embedded so <img>/<a> can authenticate.
+   * Pass `{ withToken: false }` when the URL will be *persisted* (e.g. stored in
+   * a message's attachment metadata or a share snapshot) so the secret token
+   * never leaks into durable data — renderers regenerate the token-bearing URL
+   * from the fileId at display time.
+   */
+  getFileUrl(fileId: string, opts?: { withToken?: boolean }): string {
     const params = new URLSearchParams();
-    if (this.token) params.set('token', this.token);
+    if (this.token && opts?.withToken !== false) params.set('token', this.token);
     const qs = params.toString();
     return `${API_URL}/v1/files/${fileId}${qs ? `?${qs}` : ''}`;
   }
@@ -992,7 +1000,7 @@ class WorkspaceApi {
 
   async updateA2ATaskStatus(
     taskId: string,
-    p: { state: string; text?: string; artifactText?: string },
+    p: { state: string; text?: string; artifactText?: string; actor?: string },
   ): Promise<import('./types').A2ATask> {
     return this.request(`/v1/a2a/tasks/${taskId}/status`, {
       method: 'POST',
@@ -1001,6 +1009,7 @@ class WorkspaceApi {
         state: p.state,
         text: p.text,
         artifact_text: p.artifactText,
+        actor: p.actor,
       }),
     });
   }

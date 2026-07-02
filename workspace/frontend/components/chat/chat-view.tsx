@@ -29,16 +29,22 @@ import { eventToMessage } from '@/lib/types';
 import type { WorkspaceMessage } from '@/lib/types';
 
 // Module-level message cache — survives component re-renders/unmounts.
-// Keyed by sessionId, stores the last known messages for instant thread switching.
+// Keyed by `${workspaceId}:${sessionId}` so a sessionId that collides across
+// workspaces (or a client-side workspace switch) can't leak another workspace's
+// messages through this shared module-level map.
 const messageCache = new Map<string, WorkspaceMessage[]>();
 const CACHE_MAX_SESSIONS = 10;
 // Track last seen message ID per cached session for incremental refresh
 const cacheLastSeenId = new Map<string, string>();
 
-function cacheMessages(sessionId: string, msgs: WorkspaceMessage[]) {
+function cacheKeyFor(workspaceId: string, sessionId: string) {
+  return `${workspaceId}:${sessionId}`;
+}
+
+function cacheMessages(cacheKey: string, msgs: WorkspaceMessage[]) {
   if (msgs.length === 0) return;
-  messageCache.set(sessionId, msgs);
-  cacheLastSeenId.set(sessionId, msgs[msgs.length - 1].messageId);
+  messageCache.set(cacheKey, msgs);
+  cacheLastSeenId.set(cacheKey, msgs[msgs.length - 1].messageId);
   // Evict oldest entries if cache grows too large
   if (messageCache.size > CACHE_MAX_SESSIONS) {
     const oldest = messageCache.keys().next().value;
@@ -64,22 +70,23 @@ async function fetchSessionMessages(sessionId: string): Promise<WorkspaceMessage
 }
 
 /** Incrementally refresh a cached session — fetch only new messages since last seen. */
-async function refreshCachedSession(sessionId: string): Promise<void> {
-  const lastId = cacheLastSeenId.get(sessionId);
+async function refreshCachedSession(workspaceId: string, sessionId: string): Promise<void> {
+  const cacheKey = cacheKeyFor(workspaceId, sessionId);
+  const lastId = cacheLastSeenId.get(cacheKey);
   if (!lastId) {
     // No cache yet — do full fetch
     const msgs = await fetchSessionMessages(sessionId);
-    if (msgs.length > 0) cacheMessages(sessionId, msgs);
+    if (msgs.length > 0) cacheMessages(cacheKey, msgs);
     return;
   }
   try {
     const result = await workspaceApi.pollMessages(sessionId, lastId);
     if (result.messages.length > 0) {
-      const existing = messageCache.get(sessionId) || [];
+      const existing = messageCache.get(cacheKey) || [];
       const existingIds = new Set(existing.map((m) => m.messageId));
       const unique = result.messages.filter((m) => !existingIds.has(m.messageId));
       if (unique.length > 0) {
-        cacheMessages(sessionId, [...existing, ...unique]);
+        cacheMessages(cacheKey, [...existing, ...unique]);
       }
     }
   } catch {
@@ -88,7 +95,9 @@ async function refreshCachedSession(sessionId: string): Promise<void> {
 }
 
 export function ChatView() {
-  const { agents, currentUser, currentSessionId, sessions, updateLastMessage, setSessionActive, agentModes, updateAgentMode, toggleAgentMode, stopAllAgents, activeSessionIds, stoppingSessionIds, renameSession, addParticipant, removeParticipant, consumeSkipFocus, createRoutine, knowledge, createA2ATask } = useWorkspace();
+  const { workspace, agents, currentUser, currentSessionId, sessions, updateLastMessage, setSessionActive, agentModes, updateAgentMode, toggleAgentMode, stopAllAgents, activeSessionIds, stoppingSessionIds, renameSession, addParticipant, removeParticipant, consumeSkipFocus, createRoutine, knowledge, createA2ATask } = useWorkspace();
+  // Namespace the shared message cache per workspace (see cacheKeyFor).
+  const wsId = workspace?.workspaceId ?? '';
   const [showCreateRoutine, setShowCreateRoutine] = useState(false);
   const [showDelegate, setShowDelegate] = useState(false);
   const {
@@ -106,12 +115,21 @@ export function ChatView() {
   // This ensures clicking any recent thread shows messages instantly and up-to-date.
   const currentSessionIdRef = useRef<string | null>(currentSessionId);
   currentSessionIdRef.current = currentSessionId;
+  // Read the freshest sessions inside the interval without making it a dependency
+  // (which would tear down and rebuild the interval on every poll's new array ref).
+  const sessionsRef = useRef(sessions);
+  sessionsRef.current = sessions;
+
+  // Depend on the *identity* of the active sessions, not the array reference —
+  // polling hands back a fresh `sessions` array every few seconds, which would
+  // otherwise rebuild this interval (and leak pending timeouts) constantly.
+  const activeSessionIdsKey = sessions.filter((s) => s.status === 'active').map((s) => s.sessionId).join(',');
 
   useEffect(() => {
-    if (sessions.length === 0) return;
+    if (sessionsRef.current.length === 0 || !wsId) return;
 
     const getTopSessions = () =>
-      [...sessions]
+      [...sessionsRef.current]
         .filter((s) => s.status === 'active')
         .sort((a, b) => {
           const aTime = a.lastEventAt || (a.createdAt ? new Date(a.createdAt).getTime() : 0);
@@ -120,13 +138,16 @@ export function ChatView() {
         })
         .slice(0, PREFETCH_COUNT);
 
-    // Initial fetch — staggered
+    // Initial fetch — staggered. Track every pending timeout so switching
+    // workspace/thread cancels them instead of firing stale cross-workspace queries.
+    const pending: ReturnType<typeof setTimeout>[] = [];
     const initial = getTopSessions();
     initial.forEach((s, i) => {
-      if (!messageCache.has(s.sessionId)) {
-        setTimeout(() => fetchSessionMessages(s.sessionId).then((msgs) => {
-          if (msgs.length > 0) cacheMessages(s.sessionId, msgs);
-        }), i * 300);
+      const key = cacheKeyFor(wsId, s.sessionId);
+      if (!messageCache.has(key)) {
+        pending.push(setTimeout(() => fetchSessionMessages(s.sessionId).then((msgs) => {
+          if (msgs.length > 0) cacheMessages(key, msgs);
+        }), i * 300));
       }
     });
 
@@ -136,17 +157,20 @@ export function ChatView() {
       const top = getTopSessions();
       for (const s of top) {
         if (s.sessionId === currentSessionIdRef.current) continue;
-        await refreshCachedSession(s.sessionId);
+        await refreshCachedSession(wsId, s.sessionId);
       }
     }, CACHE_REFRESH_INTERVAL);
 
-    return () => clearInterval(interval);
-  }, [sessions]);
+    return () => {
+      clearInterval(interval);
+      pending.forEach(clearTimeout);
+    };
+  }, [activeSessionIdsKey, wsId]);
 
   // Look up cached messages for the current session (read once per session switch)
   const initialMessagesRef = useRef<WorkspaceMessage[] | undefined>(undefined);
   if (currentSessionId !== initialMessagesRef.current?.[0]?.sessionId) {
-    initialMessagesRef.current = currentSessionId ? messageCache.get(currentSessionId) : undefined;
+    initialMessagesRef.current = currentSessionId ? messageCache.get(cacheKeyFor(wsId, currentSessionId)) : undefined;
   }
 
   const { messages, loading, forceRefresh, generation, loadOlder, hasOlder, loadingOlder } = useMessagePolling({
@@ -183,7 +207,7 @@ export function ChatView() {
       draftsRef.current[prevSessionIdRef.current] = currentDraft;
       // Cache messages for instant switching back
       if (messages.length > 0) {
-        cacheMessages(prevSessionIdRef.current, messages);
+        cacheMessages(cacheKeyFor(wsId, prevSessionIdRef.current), messages);
       }
     }
     // Restore draft for new session
@@ -200,9 +224,9 @@ export function ChatView() {
   // Keep cache updated with latest messages for the current session
   useEffect(() => {
     if (currentSessionId && messages.length > 0) {
-      cacheMessages(currentSessionId, messages);
+      cacheMessages(cacheKeyFor(wsId, currentSessionId), messages);
     }
-  }, [currentSessionId, messages]);
+  }, [currentSessionId, messages, wsId]);
 
   // Clear optimistic messages progressively:
   // 1. Remove optimistic user msg once the real user message arrives from the server
@@ -274,6 +298,11 @@ export function ChatView() {
   useEffect(() => {
     if (!currentSessionId) return;
     const lastMsg = displayMessages[displayMessages.length - 1];
+    // Guard against thread-switch crosstalk: right after switching, `displayMessages`
+    // can still hold the *previous* thread's messages for a tick (polling resets a
+    // beat later). Writing those to the new session's preview corrupts it — only
+    // write when the last message actually belongs to the current session.
+    if (lastMsg && lastMsg.sessionId !== currentSessionId) return;
     if (lastMsg) {
       const isTerminalStatus = /stopped|stopping failed/i.test(lastMsg.content);
       const isWorking = !isTerminalStatus && (
@@ -370,7 +399,9 @@ export function ChatView() {
             fileId: f.id,
             filename: f.filename,
             contentType: f.contentType,
-            url: workspaceApi.getFileUrl(f.id),
+            // Persisted metadata must not carry the workspace token — the renderer
+            // regenerates a token-bearing URL from fileId at display time.
+            url: workspaceApi.getFileUrl(f.id, { withToken: false }),
           }));
         }
 
@@ -517,9 +548,16 @@ export function ChatView() {
             );
           })()}
 
-          {/* Agent mode toggle — only for Claude agents */}
-          {agents.length > 0 && agents[0].agentType === 'claude' && (() => {
-            const agent = agents[0];
+          {/* Agent mode toggle — targets this thread's master (or first) agent,
+              not whatever agent happens to be first in the global list. */}
+          {(() => {
+            const sessionParticipants = currentSession?.participants || [];
+            const threadAgents = agents.filter((a) => sessionParticipants.includes(a.agentName));
+            const agent =
+              threadAgents.find((a) => a.agentName === currentSession?.master) ||
+              threadAgents.find((a) => a.role === 'master') ||
+              threadAgents[0];
+            if (!agent || agent.agentType !== 'claude') return null;
             const mode = agentModes[agent.agentName] || 'execute';
             const isExecute = mode === 'execute';
             return (

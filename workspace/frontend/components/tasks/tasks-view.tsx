@@ -19,7 +19,10 @@ function buildBlockedSet(tasks: A2ATask[]): Set<string> {
   const resolved = new Map(tasks.map((t) => [t.id, t.state === 'completed' || t.review?.state === 'approved']));
   const blocked = new Set<string>();
   for (const t of tasks) {
-    if ((t.blockedBy || []).some((id) => !resolved.get(id))) blocked.add(t.id);
+    // A blocker that's no longer in the task list (deleted/trashed) is treated as
+    // resolved — otherwise `resolved.get(id)` is undefined and `!undefined` would
+    // wedge every downstream task in Blocked forever.
+    if ((t.blockedBy || []).some((id) => resolved.has(id) && !resolved.get(id))) blocked.add(t.id);
   }
   return blocked;
 }
@@ -190,8 +193,9 @@ function TaskCard({ task, flash, blocked, sub, isSubtask, onOpen, onChanged }: {
               <button
                 disabled={busy}
                 onClick={() => {
-                  const comment = window.prompt('What changes are needed?') || undefined;
-                  act(() => workspaceApi.requestA2AReviewChanges(task.id, { comment }));
+                  const comment = window.prompt('What changes are needed?');
+                  if (comment === null) return; // cancelled — don't submit
+                  act(() => workspaceApi.requestA2AReviewChanges(task.id, { comment: comment || undefined }));
                 }}
                 className="inline-flex items-center gap-1 text-[10.5px] font-medium px-2 py-1 rounded-md border border-red-300 dark:border-red-900/60 text-red-700 dark:text-red-400 hover:bg-red-500/10 disabled:opacity-50"
               >
@@ -260,8 +264,9 @@ export function TasksView() {
     } else if (colId === 'approved' && t.review?.state === 'pending') {
       action = () => workspaceApi.approveA2AReview(t.id);
     } else if ((colId === 'submitted' || colId === 'working') && t.review?.state === 'pending') {
-      const comment = window.prompt('What changes are needed?') || undefined;
-      action = () => workspaceApi.requestA2AReviewChanges(t.id, { comment });
+      const comment = window.prompt('What changes are needed?');
+      if (comment === null) return; // cancelled — don't submit
+      action = () => workspaceApi.requestA2AReviewChanges(t.id, { comment: comment || undefined });
     }
     if (!action) return;          // not a meaningful move — ignore
     await action();
@@ -319,7 +324,8 @@ export function TasksView() {
 
   async function createTask(contractor: string, text: string, skillId?: string) {
     await workspaceApi.createA2ATask({
-      source: `human:${currentUser?.name || currentUser?.id || 'you'}`,
+      // Stable identity — matches createA2ATask in workspace-context (human:<id>).
+      source: `human:${currentUser.id}`,
       contractor, text, skillId,
     });
     refreshA2ATasks();

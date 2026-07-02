@@ -80,6 +80,15 @@ function WorkspaceContent({ workspaceId }: { workspaceId: string }) {
       stashWorkspace(workspaceId, urlToken);
       setWorkspaceCookie(workspaceId, urlToken);
       setToken(urlToken);
+      // Strip ?token= from the address bar once stashed — keep the clean /<slug>
+      // URL so the secret isn't bookmarked, shared, or logged in referrers.
+      try {
+        const url = new URL(window.location.href);
+        if (url.searchParams.has('token')) {
+          url.searchParams.delete('token');
+          window.history.replaceState(window.history.state, '', url.pathname + url.search + url.hash);
+        }
+      } catch { /* non-critical */ }
     } else {
       setToken(readWorkspaceToken(workspaceId) ?? null);
     }
