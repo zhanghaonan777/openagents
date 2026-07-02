@@ -18,20 +18,27 @@ import asyncio
 import json
 import logging
 import os
+import time
 from typing import AsyncGenerator, Optional
 
 logger = logging.getLogger(__name__)
 
 _REDIS_URL = os.environ.get("REDIS_URL", "").strip()
 _client = None
-_disabled = not _REDIS_URL
+# When Redis is configured but unreachable, retry after a cooldown instead of
+# disabling permanently — a transient startup blip must not kill the cache AND
+# pub/sub (SSE) for the whole process lifetime. Unconfigured (no URL) stays off.
+_RETRY_COOLDOWN = 30.0
+_next_retry = 0.0
 
 
 def _lazy_client():
-    """Initialize the Redis client on first use."""
-    global _client, _disabled
-    if _disabled or _client is not None:
+    """Initialize the Redis client on first use (retry after cooldown on failure)."""
+    global _client, _next_retry
+    if not _REDIS_URL or _client is not None:
         return _client
+    if time.monotonic() < _next_retry:
+        return None
     try:
         import redis  # noqa: F401  — optional dep
         _client = redis.Redis.from_url(
@@ -42,12 +49,12 @@ def _lazy_client():
             decode_responses=False,       # we pass bytes
             health_check_interval=30,
         )
-        # Probe once on startup so we know connectivity works.
+        # Probe once so we know connectivity works.
         _client.ping()
         logger.info("Redis cache: connected to %s", _REDIS_URL.split("@")[-1])
     except Exception as e:
-        logger.warning("Redis cache disabled (connect failed): %s", e)
-        _disabled = True
+        _next_retry = time.monotonic() + _RETRY_COOLDOWN
+        logger.warning("Redis cache unavailable (retry in %ss): %s", _RETRY_COOLDOWN, e)
         _client = None
     return _client
 
@@ -104,15 +111,16 @@ def publish_event(channel: str, data: bytes) -> None:
 
 
 _async_redis = None
+_next_async_retry = 0.0
 
 
 async def _lazy_async_client():
-    """Initialize an async Redis client for pub/sub subscriptions."""
-    global _async_redis
-    if _disabled:
-        return None
-    if _async_redis is not None:
+    """Initialize an async Redis client for pub/sub (retry after cooldown on failure)."""
+    global _async_redis, _next_async_retry
+    if not _REDIS_URL or _async_redis is not None:
         return _async_redis
+    if time.monotonic() < _next_async_retry:
+        return None
     try:
         import redis.asyncio as aioredis
         _async_redis = aioredis.from_url(
@@ -124,7 +132,8 @@ async def _lazy_async_client():
         await _async_redis.ping()
         logger.info("Redis async pub/sub: connected")
     except Exception as e:
-        logger.warning("Redis async pub/sub disabled: %s", e)
+        _next_async_retry = time.monotonic() + _RETRY_COOLDOWN
+        logger.warning("Redis async pub/sub unavailable (retry in %ss): %s", _RETRY_COOLDOWN, e)
         _async_redis = None
     return _async_redis
 

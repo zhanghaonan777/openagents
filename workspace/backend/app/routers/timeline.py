@@ -23,10 +23,12 @@ from app.routers.network import _resolve_workspace, _verify_workspace_access
 router = APIRouter(prefix="/v1/timeline", tags=["timeline"])
 
 
-def _recent_dup(db, workspace_id, channel_id, summary) -> Optional[Milestone]:
-    """A same-thread milestone with the IDENTICAL summary from the last 10 min, so
-    a double record (two clicks, or manual+agent of the same conclusion) doesn't
-    duplicate — while a genuinely NEW conclusion (different summary) still records.
+def _recent_dup(db, workspace_id, channel_id, summary, kind) -> Optional[Milestone]:
+    """A same-thread milestone of the SAME kind with the IDENTICAL summary from the
+    last 10 min, so a double record (two clicks, or manual+agent of the same
+    conclusion) doesn't duplicate — while a genuinely NEW conclusion (different
+    summary) still records. Matching on kind too avoids swallowing a `note` that
+    happens to share a recent `decision`'s summary (and returning the wrong kind).
     Keying on the title would either drop new conclusions (title = thread name is
     constant) or never cross-match paths; the summary is the actual decision text."""
     if not summary:
@@ -36,6 +38,7 @@ def _recent_dup(db, workspace_id, channel_id, summary) -> Optional[Milestone]:
         select(Milestone).where(
             Milestone.workspace_id == workspace_id,
             Milestone.channel_id == channel_id,
+            Milestone.kind == kind,
             Milestone.summary == summary,
             Milestone.created_at >= cutoff,
         ).order_by(Milestone.created_at.desc())
@@ -129,7 +132,7 @@ def capture_milestone(
     cid = channel.id if channel else None
     summary = last_agent.split("\n", 1)[0].lstrip("#* ").strip()[:220] if last_agent else None
     detail = last_agent[:4000] if last_agent else None
-    dup = _recent_dup(db, workspace.id, cid, summary)
+    dup = _recent_dup(db, workspace.id, cid, summary, body.kind)
     if dup:
         return success_response(_serialize(dup))
 
@@ -181,7 +184,7 @@ def record_milestone(
 
     title = (body.title or "Decision").strip()[:200]
     summary = (body.summary or "").strip() or None
-    dup = _recent_dup(db, workspace.id, cid, summary)
+    dup = _recent_dup(db, workspace.id, cid, summary, body.kind)
     if dup:
         return success_response(_serialize(dup))
 

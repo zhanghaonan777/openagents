@@ -141,7 +141,11 @@ def put_todos(
         },
         metadata={},
     )
-    _emit_event_blocking(event, workspace, db, token=x_workspace_token)
+    # Use the workspace token for the internal emit (the caller is already
+    # authenticated above). Passing x_workspace_token here would be None for
+    # bearer-authed callers → the auth mod silently drops the todos event, so
+    # the board updates but the chat stream never shows it. (Matches a2a.py.)
+    _emit_event_blocking(event, workspace, db, token=workspace.password_hash)
 
     # A2A bridge: the contractor acting (posting todos) in a task's channel
     # advances any of its `submitted` delegations there to `working`.

@@ -413,6 +413,9 @@ class TaskStatusRequest(BaseModel):
     state: str                        # working | input_required | completed | failed | rejected
     text: Optional[str] = None        # optional status message
     artifact_text: Optional[str] = None  # optional result captured as an Artifact
+    actor: Optional[str] = None       # who drove the transition (UI passes the human/agent
+                                      # identity); defaults to the contractor for the
+                                      # Phase-2 agent-self-report path
 
 
 class CancelTaskRequest(BaseModel):
@@ -919,7 +922,11 @@ def update_task_status(
         )
 
     status_msg = _message("agent", body.text) if body.text else None
-    _apply_transition(task, new_state, status_msg, actor=_agent_name(task.contractor))
+    # Attribute the transition to the actual caller when provided (the UI passes
+    # the human/agent identity), not always the contractor — the timeline is a
+    # faithful archive, so "who did this" must be accurate.
+    actor = body.actor or _agent_name(task.contractor)
+    _apply_transition(task, new_state, status_msg, actor=actor)
     if body.artifact_text:
         task.artifacts = list(task.artifacts or []) + [
             {"id": task.id, "name": "result", "parts": [{"text": body.artifact_text}]}
@@ -1244,6 +1251,16 @@ def reassign_task(
     old_name = _agent_name(task.contractor)
     if new_name == old_name:
         return json_response(ResponseCode.BAD_REQUEST, "Already assigned to that agent")
+
+    # Don't reassign to the agent who is pending-reviewing this deliverable —
+    # that would make them review their own work (breaks the no-self-review
+    # invariant that request_review enforces on the other side).
+    pending = _pending_review(task)
+    if pending and _agent_name(pending.get("reviewer") or "") == new_name:
+        return json_response(
+            ResponseCode.BAD_REQUEST,
+            "Cannot reassign to the pending reviewer (no self-review)",
+        )
 
     task.contractor = _agent_address(new_name)
     task.updated_at = _now()

@@ -737,24 +737,42 @@ async def stream_events(
 
     async def event_generator():
         keepalive_interval = 30
-        last_keepalive = asyncio.get_event_loop().time()
 
-        async for data in cache.subscribe_events(f"ws:{workspace_id}:events"):
-            if await request.is_disconnected():
-                break
-            try:
-                event = _json.loads(data)
-                if target_prefix and event.get("target", "") != target_prefix:
+        # subscribe_events only yields on a real message, so iterating it
+        # directly would block indefinitely on an idle channel — the keepalive
+        # and disconnect checks below would never run, and a proxy/LB would drop
+        # the idle connection while the subscription leaked. Drive it with a
+        # timeout so we emit a keepalive (and notice disconnects) every ~30s
+        # even when nothing is published.
+        agen = cache.subscribe_events(f"ws:{workspace_id}:events").__aiter__()
+        try:
+            while True:
+                if await request.is_disconnected():
+                    break
+                try:
+                    data = await asyncio.wait_for(
+                        agen.__anext__(), timeout=keepalive_interval
+                    )
+                except asyncio.TimeoutError:
+                    yield ": keepalive\n\n"
                     continue
-                event_id = event.get("id", "")
-                yield f"id: {event_id}\ndata: {data.decode()}\n\n"
-            except Exception:
-                continue
-
-            now = asyncio.get_event_loop().time()
-            if now - last_keepalive >= keepalive_interval:
-                yield ": keepalive\n\n"
-                last_keepalive = now
+                except StopAsyncIteration:
+                    break
+                try:
+                    event = _json.loads(data)
+                    if target_prefix and event.get("target", "") != target_prefix:
+                        continue
+                    event_id = event.get("id", "")
+                    yield f"id: {event_id}\ndata: {data.decode()}\n\n"
+                except Exception:
+                    continue
+        finally:
+            aclose = getattr(agen, "aclose", None)
+            if aclose is not None:
+                try:
+                    await aclose()
+                except Exception:
+                    pass
 
     return StreamingResponse(
         event_generator(),

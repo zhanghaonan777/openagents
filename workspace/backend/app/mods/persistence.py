@@ -50,7 +50,8 @@ class PersistenceMod(ObserveMod):
             payload=event.payload,
             metadata_=event.metadata,
             timestamp=event.timestamp,
-            visibility=event.visibility if isinstance(event.visibility, str) else event.visibility,
+            # Event uses use_enum_values=True, so visibility is already a str.
+            visibility=event.visibility,
         )
         db.add(record)
         db.flush()  # flush, don't commit — the router commits
