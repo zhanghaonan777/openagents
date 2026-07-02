@@ -118,11 +118,24 @@ class Daemon {
     if (this._cmdInterval) clearInterval(this._cmdInterval);
     if (this._configWatcher) { try { this._configWatcher.close(); } catch {} }
 
-    // Kill all child processes
+    // Signal every live adapter to tear down its in-flight CLI subprocess tree
+    // FIRST. Workspace adapters manage detached child processes (e.g. the
+    // `claude` CLI) that _killAgent doesn't track — only adapter.stop() kills
+    // them (via process-group kill). Doing this before we start waiting gives
+    // those trees a chance to die instead of orphaning when the daemon exits.
+    for (const name of Object.keys(this._adapters || {})) {
+      try { this._adapters[name].stop(); } catch {}
+    }
+
+    // Kill all directly-tracked child processes (local-only agents).
     const kills = Object.keys(this._processes).map((name) =>
-      this._killAgent(name, 5000)
+      this._killAgent(name, 8000)
     );
     await Promise.all(kills);
+
+    // Give adapters a bounded grace period to finish disconnecting and
+    // reaping their child-process trees before the daemon process exits.
+    await this._waitForAdaptersToClear(8000);
 
     this._writeStatus();
     this._cleanupPid();
@@ -301,8 +314,13 @@ class Daemon {
     try { fs.unlinkSync(pidFile); } catch {}
     try { fs.unlinkSync(statusFile); } catch {}
 
-    // Wait briefly for process to die
-    for (let i = 0; i < 5; i++) {
+    // Wait for the daemon's own graceful shutdown to complete before forcing.
+    // Its stop() signals every adapter to kill its detached CLI subprocess
+    // tree and waits for those to be reaped — which can take well over the old
+    // 2.5s window. Cutting it short with SIGKILL here orphaned those children
+    // (e.g. `claude` processes). Poll for up to ~18s, but return the instant
+    // the process actually exits so a fast shutdown stays fast.
+    for (let i = 0; i < 36; i++) {
       if (!Daemon._isAlive(pid)) return true;
       execSync(IS_WINDOWS ? 'ping -n 2 127.0.0.1 >nul' : 'sleep 0.5', {
         stdio: 'ignore', timeout: 5000,
@@ -687,20 +705,42 @@ class Daemon {
     } catch {}
   }
 
-  _processCommands() {
-    const cmdFile = this.config.cmdFile;
+  async _processCommands() {
+    // Re-entrancy guard: the 200ms interval must not overlap itself while a
+    // batch is still being awaited, or two ticks could each read/handle the
+    // same commands and interleave stop/restart of the same agent.
+    if (this._processingCommands) return;
+    this._processingCommands = true;
     try {
+      const cmdFile = this.config.cmdFile;
       if (!fs.existsSync(cmdFile)) return;
-      const raw = fs.readFileSync(cmdFile, 'utf-8').trim();
-      fs.unlinkSync(cmdFile);
+
+      // Atomically claim the file by renaming it aside before reading. Writers
+      // use appendFileSync, so any command appended after this rename lands in
+      // a fresh daemon.cmd and is handled on the next tick — nothing is lost to
+      // a read-then-unlink race.
+      const claimed = `${cmdFile}.processing.${process.pid}.${Date.now()}`;
+      let raw;
+      try {
+        fs.renameSync(cmdFile, claimed);
+      } catch {
+        return; // another tick claimed it, or it vanished
+      }
+      try {
+        raw = fs.readFileSync(claimed, 'utf-8').trim();
+      } finally {
+        try { fs.unlinkSync(claimed); } catch {}
+      }
       if (!raw) return;
 
+      // Process commands strictly in order, awaiting each so a stop and a
+      // subsequent restart of the same agent can't run concurrently.
       for (const line of raw.split('\n')) {
         const cmd = line.trim();
         if (cmd.startsWith('stop:')) {
           const agentName = cmd.slice(5).trim();
           this._log(`Command: stop ${agentName}`);
-          this.stopAgent(agentName);
+          await this.stopAgent(agentName);
         } else if (cmd.startsWith('start:')) {
           const agentName = cmd.slice(6).trim();
           // 'start' must be idempotent. The launcher sends start:<name> right
@@ -719,18 +759,22 @@ class Daemon {
             this._log(`Command: start ${agentName} — already running, skipping`);
           } else {
             this._log(`Command: start ${agentName}`);
-            this.restartAgent(agentName);
+            await this.restartAgent(agentName);
           }
         } else if (cmd.startsWith('restart:')) {
           const agentName = cmd.slice(8).trim();
           this._log(`Command: restart ${agentName}`);
-          this.restartAgent(agentName);
+          await this.restartAgent(agentName);
         } else if (cmd === 'reload') {
           this._log('Command: reload');
-          this._reload();
+          await this._reload();
         }
       }
-    } catch {}
+    } catch (e) {
+      this._log(`Command processing error: ${e && e.message ? e.message : e}`);
+    } finally {
+      this._processingCommands = false;
+    }
   }
 
   _watchConfig() {
@@ -780,6 +824,10 @@ class Daemon {
     for (const name of oldNames) {
       if (!newNames.has(name)) {
         await this.stopAgent(name);
+        // Drop the process record too — otherwise the removed agent lingers
+        // in status.json forever as a 'stopped' ghost entry.
+        delete this._processes[name];
+        this._stoppedAgents.delete(name);
         this._log(`Reload: stopped removed agent '${name}'`);
       }
     }
@@ -824,6 +872,20 @@ class Daemon {
       this._log(`WARNING: adapter '${name}' did not clear after 10s — force-releasing slot to avoid duplicate`);
       try { this._adapters[name].stop(); } catch {}
       delete this._adapters[name];
+    }
+  }
+
+  /**
+   * Wait (up to timeoutMs) for all adapter slots to clear — i.e. every
+   * adapter's run() loop has exited its finally (disconnect + child-process
+   * teardown). Used on shutdown so detached CLI subprocess trees are reaped
+   * before the daemon process exits, rather than left as orphans.
+   */
+  async _waitForAdaptersToClear(timeoutMs) {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      if (!this._adapters || Object.keys(this._adapters).length === 0) return;
+      await this._sleep(200);
     }
   }
 

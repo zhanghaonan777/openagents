@@ -120,19 +120,28 @@ class WorkspaceClient {
       network: workspaceId,
     };
     if (sessionId) body.session_id = sessionId;
-    const data = await this._post('/v1/heartbeat', body, this._wsHeaders(token));
+    // Short timeout (10s, vs the 30s default): a hung heartbeat must fail fast
+    // enough that the caller's one retry still lands inside the 60s lease.
+    const data = await this._post('/v1/heartbeat', body, this._wsHeaders(token), 10000);
     return data.data || data;
   }
 
   /**
    * Disconnect agent via POST /v1/leave. Best-effort (ignores errors).
+   *
+   * @param {string} [sessionId] - this adapter's own session id. When given,
+   *   the server only marks the agent offline if it still owns the current
+   *   session. Prevents a superseded/late adapter's leave from knocking the
+   *   replacement session offline.
    */
-  async disconnect(workspaceId, agentName, token) {
+  async disconnect(workspaceId, agentName, token, sessionId) {
     try {
-      await this._post('/v1/leave', {
+      const body = {
         agent_name: agentName,
         network: workspaceId,
-      }, this._wsHeaders(token));
+      };
+      if (sessionId) body.session_id = sessionId;
+      await this._post('/v1/leave', body, this._wsHeaders(token));
     } catch {}
   }
 
@@ -197,6 +206,29 @@ class WorkspaceClient {
       cursor = events[events.length - 1].id || null;
     }
     return { events, cursor };
+  }
+
+  /**
+   * Fetch the latest workspace.tool_result event id (head cursor). Used by
+   * adapters to skip past existing UI tool-results on join so a restart
+   * doesn't replay old UI actions as fresh user turns. Returns null when
+   * there are none or the request fails.
+   */
+  async getHeadToolResultId(workspaceId, token) {
+    try {
+      const params = new URLSearchParams({
+        network: workspaceId,
+        type: 'workspace.tool_result',
+        sort: 'desc',
+        limit: '1',
+      });
+      const data = await this._get(`/v1/events?${params}`, this._wsHeaders(token));
+      const result = data.data || data;
+      const events = (result && result.events) || [];
+      return events.length > 0 ? (events[0].id || null) : null;
+    } catch {
+      return null;
+    }
   }
 
   /**
@@ -661,8 +693,7 @@ class WorkspaceClient {
     return data.data || data;
   }
 
-  async cancelTimer(workspaceId, token, timerId, network) {
-    const params = network ? `?network=${network}` : '';
+  async cancelTimer(workspaceId, token, timerId) {
     const data = await this._delete(`/v1/timers/${timerId}`, this._wsHeaders(token));
     return data.data || data;
   }

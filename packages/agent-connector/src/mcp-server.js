@@ -20,6 +20,36 @@ const { WorkspaceClient } = require('./workspace-client');
 // Active tunnels: port → { proc, url }
 const _activeTunnels = {};
 
+/**
+ * Kill a tunnel's cloudflared process. Tunnels are spawned detached, so kill
+ * the whole process group (negative pid) to avoid leaving the child alive;
+ * fall back to a direct kill if the group kill fails.
+ */
+function _killTunnelProc(proc) {
+  if (!proc) return;
+  try {
+    if (process.platform !== 'win32' && proc.pid) {
+      process.kill(-proc.pid, 'SIGTERM');
+    } else {
+      proc.kill();
+    }
+  } catch {
+    try { proc.kill(); } catch {}
+  }
+}
+
+/**
+ * Tear down every active tunnel. Called before the MCP server exits (stdin
+ * close, SIGTERM, SIGINT) so cloudflared processes don't orphan and keep
+ * the public URL alive after the agent is gone.
+ */
+function _cleanupAllTunnels() {
+  for (const port of Object.keys(_activeTunnels)) {
+    _killTunnelProc(_activeTunnels[port].proc);
+    delete _activeTunnels[port];
+  }
+}
+
 // ── Tool definitions ────────────────────────────────────────────────────────
 
 function buildToolDefs(disabledModules) {
@@ -507,7 +537,12 @@ class McpServer {
         this._write(jsonRpcError(msg.id, -32603, e.message));
       });
     });
-    rl.on('close', () => process.exit(0));
+    rl.on('close', () => { _cleanupAllTunnels(); process.exit(0); });
+    // Kill any tunnels we opened when the daemon signals shutdown, so a
+    // detached cloudflared child doesn't outlive this MCP server.
+    const onSignal = () => { _cleanupAllTunnels(); process.exit(0); };
+    process.once('SIGTERM', onSignal);
+    process.once('SIGINT', onSignal);
     this._log('MCP server started');
   }
 
@@ -580,7 +615,7 @@ class McpServer {
         const agents = data.agents || data || [];
         if (!agents.length) return text('No agents connected.');
         const lines = agents.map((a) =>
-          `- ${a.name} (${a.type || 'unknown'}) — ${a.status || 'unknown'}${a.role ? ` [${a.role}]` : ''}`
+          `- ${a.agentName || 'unknown'} — ${a.status || 'unknown'}${a.role ? ` [${a.role}]` : ''}`
         );
         return text(lines.join('\n'));
       }
@@ -799,7 +834,7 @@ class McpServer {
         const port = args.port;
         const tunnel = _activeTunnels[port];
         if (!tunnel) return text(`No tunnel open for port ${port}`);
-        try { tunnel.proc.kill(); } catch {}
+        _killTunnelProc(tunnel.proc);
         delete _activeTunnels[port];
         return text(`Tunnel closed for port ${port}`);
       }

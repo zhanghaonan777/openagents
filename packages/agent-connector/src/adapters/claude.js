@@ -45,6 +45,10 @@ class ClaudeAdapter extends BaseAdapter {
       os.homedir(), '.openagents', 'sessions',
       `${this.workspaceId}_${this.agentName}.json`
     );
+    // Track MCP config files written for in-flight turns so we can clean up
+    // the ones that still carry the workspace token if the daemon is killed
+    // mid-turn (SIGTERM/SIGINT) before _handleMessage's own unlink runs.
+    this._activeMcpConfigs = new Set();
     this._loadSessions();
   }
 
@@ -144,7 +148,9 @@ class ClaudeAdapter extends BaseAdapter {
         const os = require('os');
         const fs = require('fs');
         const cmdFile = path.join(os.homedir(), '.openagents', 'daemon.cmd');
-        fs.writeFileSync(cmdFile, `restart:${this.agentName}\n`);
+        // Append (not overwrite) so a concurrent command in the same poll
+        // window isn't clobbered; the daemon claims the file atomically.
+        fs.appendFileSync(cmdFile, `restart:${this.agentName}\n`);
         this._log(`Restart: requested daemon bounce for agent=${this.agentName}`);
       } catch (e) {
         this._log(`Restart: failed to write daemon.cmd: ${e && e.message ? e.message : e}`);
@@ -173,6 +179,12 @@ class ClaudeAdapter extends BaseAdapter {
     this._stopAllProcesses(
       'Task interrupted — daemon restarting. Send another message to continue.'
     ).catch(() => {});
+    // Remove any token-bearing MCP config files left by in-flight turns so a
+    // mid-turn kill doesn't strand them on disk.
+    for (const f of this._activeMcpConfigs) {
+      try { fs.unlinkSync(f); } catch {}
+    }
+    this._activeMcpConfigs.clear();
     super.stop();
   }
 
@@ -471,9 +483,38 @@ class ClaudeAdapter extends BaseAdapter {
       browserEnabled: this._browserEnabledCache === true,
     });
     fs.writeFileSync(skillFile, skillContent, 'utf-8');
+    // The skill file embeds the workspace token in plaintext (curl auth
+    // header). Lock it to owner-only so other local users can't read it, and
+    // keep it out of the user's git commits — this file lives inside their
+    // project dir, so a stray `git add .` would otherwise leak the token.
+    try { fs.chmodSync(skillFile, 0o600); } catch {}
+    this._excludeFromGit(workDir, path.join('.claude', 'skills', 'openagents-workspace.md'));
     this._log(`Wrote workspace skill to ${skillFile}`);
 
     return { cmd, skillFile };
+  }
+
+  /**
+   * Best-effort: add a path to the repo's local .git/info/exclude so a
+   * token-bearing generated file can't be committed via `git add .`. Local
+   * and reversible (never touches tracked .gitignore). No-op when workDir
+   * isn't a git repo or the entry is already present.
+   */
+  _excludeFromGit(workDir, relPath) {
+    try {
+      const gitDir = path.join(workDir, '.git');
+      if (!fs.existsSync(gitDir) || !fs.statSync(gitDir).isDirectory()) return;
+      const infoDir = path.join(gitDir, 'info');
+      const excludeFile = path.join(infoDir, 'exclude');
+      const entry = relPath.split(path.sep).join('/');
+      let existing = '';
+      try { existing = fs.readFileSync(excludeFile, 'utf-8'); } catch {}
+      const lines = existing.split(/\r?\n/).map((l) => l.trim());
+      if (lines.includes(entry)) return;
+      fs.mkdirSync(infoDir, { recursive: true });
+      const prefix = existing && !existing.endsWith('\n') ? '\n' : '';
+      fs.appendFileSync(excludeFile, `${prefix}${entry}\n`, 'utf-8');
+    } catch {}
   }
 
   /**
@@ -597,6 +638,11 @@ class ClaudeAdapter extends BaseAdapter {
     fs.mkdirSync(mcpDir, { recursive: true });
     const mcpFile = path.join(mcpDir, `mcp-${Date.now()}-${Math.random().toString(36).slice(2)}.json`);
     fs.writeFileSync(mcpFile, JSON.stringify(mcpConfig));
+    // The config embeds the workspace token (env.OA_WORKSPACE_TOKEN) — restrict
+    // to owner-only, and remember it so stop() can clean it up if the daemon is
+    // killed mid-turn before _handleMessage's own unlink runs.
+    try { fs.chmodSync(mcpFile, 0o600); } catch {}
+    this._activeMcpConfigs.add(mcpFile);
     cmd.push('--mcp-config', mcpFile);
 
     return { cmd, mcpConfigFile: mcpFile };
@@ -1067,7 +1113,7 @@ class ClaudeAdapter extends BaseAdapter {
     }
 
     for (let attempt = 0; attempt < 2; attempt++) {
-      if (mcpConfigFile) { try { fs.unlinkSync(mcpConfigFile); } catch {} mcpConfigFile = null; }
+      if (mcpConfigFile) { try { fs.unlinkSync(mcpConfigFile); } catch {} this._activeMcpConfigs.delete(mcpConfigFile); mcpConfigFile = null; }
 
       if (attempt > 0) {
         this._killPersistentProc(msgChannel);
@@ -1183,6 +1229,7 @@ class ClaudeAdapter extends BaseAdapter {
 
     if (mcpConfigFile) {
       try { fs.unlinkSync(mcpConfigFile); } catch {}
+      this._activeMcpConfigs.delete(mcpConfigFile);
     }
   }
 }

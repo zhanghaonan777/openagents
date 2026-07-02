@@ -113,7 +113,10 @@ class BaseAdapter {
     // its success — keeping these paths independent makes /restart and
     // /status responsive immediately after join.
     await this._skipExistingControlEvents();
-    const heartbeatInterval = setInterval(() => this._heartbeat(), 30000);
+    // 20s beats the server's 60s presence lease with room for one retry, so a
+    // single dropped heartbeat can be re-sent and detected well within the
+    // lease instead of silently letting the agent go offline.
+    const heartbeatInterval = setInterval(() => this._heartbeat(), 20000);
     const controlPoller = this._controlPollerLoop();
 
     try {
@@ -123,6 +126,7 @@ class BaseAdapter {
       }
       // Slow path: only the message-poll loop waits for this.
       await this._skipExistingEvents();
+      await this._skipExistingToolResults();
       this._log('Starting poll loop...');
       await this._pollLoop();
     } finally {
@@ -131,7 +135,10 @@ class BaseAdapter {
       clearInterval(heartbeatInterval);
       try { await controlPoller; } catch {}
       try {
-        await this.client.disconnect(this.workspaceId, this.agentName, this.token);
+        // Carry our own session id so the server ignores this leave if a
+        // newer adapter has already claimed the agent's slot — otherwise a
+        // late/superseded disconnect would mark the live session offline.
+        await this.client.disconnect(this.workspaceId, this.agentName, this.token, this._sessionId);
       } catch {}
     }
   }
@@ -157,6 +164,22 @@ class BaseAdapter {
     }
   }
 
+  /**
+   * Jump the tool_result cursor to the head on startup so a restart doesn't
+   * replay historical UI actions as fresh user turns. `_lastToolResultId`
+   * starts null, and pollToolResults(after=null) would otherwise return old
+   * events and re-dispatch them.
+   */
+  async _skipExistingToolResults() {
+    try {
+      const head = await this.client.getHeadToolResultId(this.workspaceId, this.token);
+      if (head) {
+        this._lastToolResultId = head;
+        this._log(`Skipped existing tool_results, cursor at ${head}`);
+      }
+    } catch {}
+  }
+
   // ------------------------------------------------------------------
   // Heartbeat
   // ------------------------------------------------------------------
@@ -170,7 +193,20 @@ class BaseAdapter {
         this._running = false;
         return;
       }
-      this._log(`Heartbeat failed: ${e.message}`);
+      // One immediate retry — a single transient network blip shouldn't cost
+      // us the 60s presence lease. The heartbeat request itself uses a short
+      // (10s) timeout so both attempts still fit comfortably inside the lease.
+      this._log(`Heartbeat failed: ${e.message} — retrying once`);
+      try {
+        await this.client.heartbeat(this.workspaceId, this.agentName, this.token, this._sessionId);
+      } catch (e2) {
+        if (e2 instanceof SessionRevokedError) {
+          this._log(`SESSION REVOKED: another client joined as '${this.agentName}'. Stopping adapter.`);
+          this._running = false;
+          return;
+        }
+        this._log(`Heartbeat retry failed: ${e2.message}`);
+      }
     }
   }
 

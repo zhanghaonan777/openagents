@@ -164,7 +164,11 @@ class Config {
   }
 
   writeCommand(cmd) {
-    fs.writeFileSync(this.cmdFile, cmd + '\n', 'utf-8');
+    // Append rather than overwrite: multiple commands can be queued back-to-back
+    // (e.g. stop:a then start:a) faster than the daemon's poll interval, and a
+    // truncating write would drop the earlier command. The daemon claims the
+    // file atomically (rename) before reading, so appends are never lost.
+    fs.appendFileSync(this.cmdFile, cmd + '\n', 'utf-8');
   }
 
   getLogs(agentName, lines = 200) {
