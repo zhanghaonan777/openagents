@@ -15,12 +15,19 @@ Expects context.extra to contain:
 """
 
 import logging
+import secrets
 from typing import List, Optional
 
 from openagents.core.onm_events import Event
 from openagents.core.onm_mods import GuardMod, PipelineContext
 
 logger = logging.getLogger(__name__)
+
+# Collaborator roles that grant access. Auto-registered humans (people who
+# merely posted a message) are stored as "guest" and are NOT an auth path —
+# only deliberately-invited editors/viewers are. Keep in sync with
+# app.routers.workspaces._ACCESS_COLLAB_ROLES.
+_ACCESS_COLLAB_ROLES = {"editor", "viewer"}
 
 
 class AuthMod(GuardMod):
@@ -40,8 +47,8 @@ class AuthMod(GuardMod):
 
         # If workspace has a password, verify auth
         if workspace.password_hash:
-            # Path 1: Workspace token matches
-            if token and token == workspace.password_hash:
+            # Path 1: Workspace token matches (constant-time compare)
+            if token and secrets.compare_digest(token, workspace.password_hash):
                 event.network = str(workspace.id)
                 return event
 
@@ -55,8 +62,13 @@ class AuthMod(GuardMod):
                     if workspace.creator_email and email_lower == workspace.creator_email.lower():
                         event.network = str(workspace.id)
                         return event
-                    # Collaborator check (loaded via selectin)
-                    if any(c.email == email_lower for c in (workspace.collaborators or [])):
+                    # Collaborator check (loaded via selectin). Only invited
+                    # editors/viewers grant access — auto-registered "guest"
+                    # rows (from a bare chat post) never do.
+                    if any(
+                        c.email == email_lower and c.role in _ACCESS_COLLAB_ROLES
+                        for c in (workspace.collaborators or [])
+                    ):
                         event.network = str(workspace.id)
                         return event
 

@@ -220,11 +220,12 @@ class TestLeaveNetwork:
             "token": workspace["token"],
             "network": workspace["id"],
         })
-        # Leave
+        # Leave (agents send the workspace token — required since presence
+        # endpoints are token-gated to prevent slug-only force-offline).
         resp = client.post("/v1/leave", json={
             "agent_name": "agent-beta",
             "network": workspace["id"],
-        })
+        }, headers={"X-Workspace-Token": workspace["token"]})
         assert resp.status_code == 200
         assert resp.json()["data"]["status"] == "offline"
 
@@ -233,9 +234,17 @@ class TestLeaveNetwork:
         resp = client.post("/v1/leave", json={
             "agent_name": "unknown-agent",
             "network": workspace["id"],
-        })
+        }, headers={"X-Workspace-Token": workspace["token"]})
         # In event model, the event is recorded even if agent wasn't a member
         assert resp.status_code == 200
+
+    def test_leave_without_token_is_rejected(self, client, workspace):
+        """Without the workspace token, leave is unauthorized (no slug-only DoS)."""
+        resp = client.post("/v1/leave", json={
+            "agent_name": "agent-beta",
+            "network": workspace["id"],
+        })
+        assert resp.status_code == 401
 
 
 class TestHeartbeat:
@@ -249,11 +258,11 @@ class TestHeartbeat:
             "token": workspace["token"],
             "network": workspace["id"],
         })
-        # Heartbeat
+        # Heartbeat (token-gated, like leave)
         resp = client.post("/v1/heartbeat", json={
             "agent_name": "agent-beta",
             "network": workspace["id"],
-        })
+        }, headers={"X-Workspace-Token": workspace["token"]})
         assert resp.status_code == 200
         assert resp.json()["data"]["status"] == "online"
 
@@ -262,9 +271,17 @@ class TestHeartbeat:
         resp = client.post("/v1/heartbeat", json={
             "agent_name": "unknown-agent",
             "network": workspace["id"],
-        })
+        }, headers={"X-Workspace-Token": workspace["token"]})
         # In event model, the event is recorded even if agent wasn't a member
         assert resp.status_code == 200
+
+    def test_heartbeat_without_token_is_rejected(self, client, workspace):
+        """Without the workspace token, heartbeat is unauthorized (no forged presence)."""
+        resp = client.post("/v1/heartbeat", json={
+            "agent_name": "agent-beta",
+            "network": workspace["id"],
+        })
+        assert resp.status_code == 401
 
 
 class TestDiscover:
@@ -452,7 +469,7 @@ class TestSessionEnforcement:
             "agent_name": "agent-sess3",
             "network": workspace["id"],
             "session_id": stale_session,
-        })
+        }, headers={"X-Workspace-Token": workspace["token"]})
         assert hb.status_code == 401
         assert "session_revoked" in hb.json().get("message", "").lower()
 
@@ -469,7 +486,7 @@ class TestSessionEnforcement:
             "agent_name": "agent-sess4",
             "network": workspace["id"],
             "session_id": sid,
-        })
+        }, headers={"X-Workspace-Token": workspace["token"]})
         assert hb.status_code == 200
 
     def test_heartbeat_without_session_id_legacy_ok(self, client, workspace):
@@ -484,7 +501,7 @@ class TestSessionEnforcement:
             "agent_name": "agent-sess5",
             "network": workspace["id"],
             # no session_id
-        })
+        }, headers={"X-Workspace-Token": workspace["token"]})
         assert hb.status_code == 200
 
     def test_message_post_with_stale_session_is_rejected(self, client, workspace):

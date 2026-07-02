@@ -104,6 +104,13 @@ def _run_maintenance():
         db.close()
 
 
+def _agent_from_source(source: str) -> str:
+    """Strip the ``openagents:`` address prefix (prefix-only, unlike str.replace
+    which would rewrite the token anywhere in the string)."""
+    prefix = "openagents:"
+    return source[len(prefix):] if source and source.startswith(prefix) else source
+
+
 async def _fire_due():
     """Fire due timers and routines.
 
@@ -126,21 +133,38 @@ async def _fire_due():
         now = datetime.now(timezone.utc)
 
         # ── Fire due timers ──
-        due = db.execute(
-            select(TimerRecord).where(
+        # Claim each row under FOR UPDATE SKIP LOCKED so that when several
+        # workers run this loop (2 replicas × WEB_CONCURRENCY), a given timer
+        # is fired exactly once: the winner locks the row, the others skip it,
+        # and once the 'fired' flag commits the status filter excludes it. The
+        # flag still commits *after* the message is sent (a crash mid-send
+        # re-fires — preferred over dropping a reminder).
+        due_timer_ids = db.execute(
+            select(TimerRecord.id).where(
                 TimerRecord.status == "active",
                 TimerRecord.fires_at <= now,
             ).limit(50)
         ).scalars().all()
 
-        for timer in due:
+        for timer_id in due_timer_ids:
+            timer = db.execute(
+                select(TimerRecord).where(
+                    TimerRecord.id == timer_id,
+                    TimerRecord.status == "active",
+                    TimerRecord.fires_at <= now,
+                ).with_for_update(skip_locked=True)
+            ).scalar_one_or_none()
+            if timer is None:
+                db.rollback()  # already claimed by another worker / no longer due
+                continue
             timer.status = "fired"
             workspace = db.execute(
                 select(Workspace).where(Workspace.id == timer.workspace_id)
             ).scalar_one_or_none()
             if not workspace:
+                db.commit()
                 continue
-            agent_name = timer.created_by.replace("openagents:", "")
+            agent_name = _agent_from_source(timer.created_by)
             event = Event(
                 type="workspace.message.posted",
                 source="system:timer",
@@ -162,26 +186,38 @@ async def _fire_due():
                 await pipeline.process(event, ctx)
             except Exception:
                 logger.exception("Timer fire failed for %s", timer.id)
-            # Commit the 'fired' flag per timer — otherwise an exception later in
-            # this cycle rolls back the flag while the message already went out,
-            # and the timer fires again next cycle.
+            # Commit the 'fired' flag per timer — releases the row lock and
+            # ensures a later exception in this cycle can't roll it back.
             db.commit()
 
         # ── Fire due routines ──
-        due_routines = db.execute(
-            select(RoutineRecord).where(
+        # Same per-row claim as timers so concurrent workers don't double-fire
+        # a routine (which would also advance next_fires_at twice).
+        due_routine_ids = db.execute(
+            select(RoutineRecord.id).where(
                 RoutineRecord.status == "active",
                 RoutineRecord.next_fires_at <= now,
             ).limit(50)
         ).scalars().all()
 
-        for routine in due_routines:
+        for routine_id in due_routine_ids:
+            routine = db.execute(
+                select(RoutineRecord).where(
+                    RoutineRecord.id == routine_id,
+                    RoutineRecord.status == "active",
+                    RoutineRecord.next_fires_at <= now,
+                ).with_for_update(skip_locked=True)
+            ).scalar_one_or_none()
+            if routine is None:
+                db.rollback()  # already claimed by another worker / no longer due
+                continue
             workspace = db.execute(
                 select(Workspace).where(Workspace.id == routine.workspace_id)
             ).scalar_one_or_none()
             if not workspace:
+                db.commit()
                 continue
-            agent_name = routine.created_by.replace("openagents:", "")
+            agent_name = _agent_from_source(routine.created_by)
 
             # Skip if the agent hasn't responded to the previous fire yet. Look at
             # the last *substantive* message — the agent emits intermediate
@@ -331,10 +367,16 @@ app = FastAPI(
 # headers (and OPTIONS preflight handling) are applied BEFORE gzip, so
 # CORS-aware responses still work when compressed.
 origins = [o.strip() for o in config.CORS_ORIGINS.split(",") if o.strip()]
+# A wildcard origin can't be safely combined with credentials: Starlette would
+# then reflect *any* Origin AND send Access-Control-Allow-Credentials: true,
+# opening credentialed cross-origin access to the whole web. Only allow
+# credentials (cookies) when the origins are explicitly enumerated. Set
+# CORS_ORIGINS to a concrete list in production to enable cookie auth.
+allow_all_origins = "*" in origins
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
-    allow_credentials=True,
+    allow_credentials=not allow_all_origins,
     allow_methods=["*"],
     allow_headers=["*"],
 )

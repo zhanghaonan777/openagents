@@ -53,11 +53,29 @@ def _extract_bearer(authorization: Optional[str]) -> Optional[str]:
     return None
 
 
-def _verify_workspace_access(workspace, token: Optional[str], authorization: Optional[str]) -> bool:
-    """Check if the caller has access to a workspace via token, bearer owner, or collaborator."""
+# Collaborator roles that grant workspace ACCESS. Auto-registered humans
+# (people who merely posted a message) are stored as "guest" and are NOT an
+# auth path — only deliberately-invited editors/viewers are. Editors can make
+# changes; viewers are read-only (see require_edit below).
+_ACCESS_COLLAB_ROLES = {"editor", "viewer"}
+_EDIT_COLLAB_ROLES = {"editor"}
+
+
+def _verify_workspace_access(
+    workspace,
+    token: Optional[str],
+    authorization: Optional[str],
+    require_edit: bool = False,
+) -> bool:
+    """Check if the caller has access to a workspace via token, bearer owner, or collaborator.
+
+    ``require_edit=True`` gates destructive/owner-level operations: the workspace
+    token and the owner always pass, but a *viewer* collaborator does not.
+    """
+    import secrets as _secrets
     if not workspace.password_hash:
         return True
-    if token and token == workspace.password_hash:
+    if token and _secrets.compare_digest(token, workspace.password_hash):
         return True
     bearer = _extract_bearer(authorization)
     if bearer:
@@ -68,8 +86,13 @@ def _verify_workspace_access(workspace, token: Optional[str], authorization: Opt
             # Owner check
             if workspace.creator_email and email_lower == workspace.creator_email.lower():
                 return True
-            # Collaborator check (loaded via selectin)
-            if any(c.email == email_lower for c in (workspace.collaborators or [])):
+            # Collaborator check (loaded via selectin). Only invited editors/
+            # viewers grant access; auto-registered "guest" rows never do.
+            for c in (workspace.collaborators or []):
+                if c.email != email_lower or c.role not in _ACCESS_COLLAB_ROLES:
+                    continue
+                if require_edit and c.role not in _EDIT_COLLAB_ROLES:
+                    return False
                 return True
     return False
 
@@ -144,12 +167,16 @@ def _format_workspace(ws: Workspace, members: list, now: datetime) -> dict:
         })
 
     settings = ws.settings or {}
+    # Never surface secrets in the raw settings blob. browserfabricApiKey is
+    # exposed separately below in masked form; the plaintext value must not
+    # leak through the settings dict (which clients read for browser_enabled etc).
+    safe_settings = {k: v for k, v in settings.items() if k != "browserfabric_api_key"}
     return {
         "workspaceId": str(ws.id),
         "slug": ws.slug,
         "name": ws.name,
         "creatorEmail": ws.creator_email,
-        "settings": settings,
+        "settings": safe_settings,
         # Surface browser_enabled at the top level for clients that don't
         # want to dig into the settings dict. Mirrors what's inside settings.
         "browserEnabled": bool(settings.get("browser_enabled", False)),
@@ -255,27 +282,32 @@ def create_workspace(
 
 @router.get("")
 def list_workspaces(
-    creator_email: Optional[str] = Query(None),
-    agent_name: Optional[str] = Query(None),
+    creator_email: Optional[str] = Query(None),  # accepted for compat; ignored
+    agent_name: Optional[str] = Query(None),      # accepted for compat; ignored
     db: Session = Depends(get_db),
+    authorization: Optional[str] = Header(None),
 ):
-    """List workspaces filtered by creator or agent membership.
+    """List the authenticated user's own workspaces.
 
-    A scoping filter is REQUIRED: without one this would enumerate every
-    workspace in the system. Return empty rather than leak the global list.
+    Requires a Firebase bearer token. The list is scoped to workspaces the
+    verified caller owns — the client-supplied ``creator_email``/``agent_name``
+    query params are NOT trusted (that would let anyone enumerate another
+    user's workspaces by guessing their email). Returns empty when unauthenticated.
     """
-    if not creator_email and not agent_name:
+    from sqlalchemy import func
+
+    bearer = _extract_bearer(authorization)
+    if not bearer:
+        return success_response([])
+    from app.firebase_auth import verify_firebase_token
+    email = verify_firebase_token(bearer)
+    if not email:
         return success_response([])
 
-    query = select(Workspace).where(Workspace.status != "deleted")
-
-    if creator_email:
-        query = query.where(Workspace.creator_email == creator_email)
-
-    if agent_name:
-        query = query.join(WorkspaceMember).where(
-            WorkspaceMember.agent_name == agent_name
-        )
+    query = select(Workspace).where(
+        Workspace.status != "deleted",
+        func.lower(Workspace.creator_email) == email.lower(),
+    )
 
     query = query.options(selectinload(Workspace.members))
     workspaces = db.execute(query.order_by(Workspace.last_activity_at.desc())).scalars().all()
@@ -348,7 +380,7 @@ def update_workspace(
     if not workspace:
         return json_response(ResponseCode.NOT_FOUND, "Workspace not found")
 
-    if not _verify_workspace_access(workspace, x_workspace_token, authorization):
+    if not _verify_workspace_access(workspace, x_workspace_token, authorization, require_edit=True):
         return json_response(ResponseCode.UNAUTHORIZED, "Invalid workspace credentials")
 
     if body.name is not None:
@@ -388,14 +420,18 @@ def update_workspace(
 def claim_workspace(
     workspace_id: str,
     db: Session = Depends(get_db),
+    x_workspace_token: Optional[str] = Header(None),
     authorization: Optional[str] = Header(None),
 ):
     """
     Claim ownership of a workspace.
 
-    Requires a valid Firebase bearer token. Sets creator_email on the workspace
-    so the user can access it without a workspace token.
+    Requires a valid Firebase bearer token AND possession of the workspace
+    token — otherwise anyone signed in could claim a workspace just by guessing
+    its id/slug. Sets creator_email so the user can then access it via bearer.
     """
+    import secrets as _secrets
+
     bearer = _extract_bearer(authorization)
     if not bearer:
         return json_response(ResponseCode.UNAUTHORIZED, "Bearer token required")
@@ -412,8 +448,21 @@ def claim_workspace(
     if not workspace:
         return json_response(ResponseCode.NOT_FOUND, "Workspace not found")
 
-    if workspace.creator_email and workspace.creator_email != email:
-        return json_response(ResponseCode.FORBIDDEN, "Workspace already claimed by another user")
+    if workspace.creator_email:
+        # Already claimed: only the existing owner may re-claim (idempotent);
+        # a different user is forbidden regardless of token.
+        if workspace.creator_email.lower() != email.lower():
+            return json_response(ResponseCode.FORBIDDEN, "Workspace already claimed by another user")
+    else:
+        # Unclaimed: require proof of access (the workspace token) so a signed-in
+        # user can't blind-claim a workspace just by guessing its id/slug.
+        holds_token = bool(
+            workspace.password_hash
+            and x_workspace_token
+            and _secrets.compare_digest(x_workspace_token, workspace.password_hash)
+        )
+        if not holds_token:
+            return json_response(ResponseCode.UNAUTHORIZED, "Workspace token required to claim")
 
     workspace.creator_email = email
     db.commit()
@@ -450,7 +499,7 @@ def rotate_token(
     if not workspace:
         return json_response(ResponseCode.NOT_FOUND, "Workspace not found")
 
-    if not _verify_workspace_access(workspace, x_workspace_token, authorization):
+    if not _verify_workspace_access(workspace, x_workspace_token, authorization, require_edit=True):
         return json_response(ResponseCode.UNAUTHORIZED, "Invalid credentials")
 
     new_token = secrets.token_urlsafe(32)
@@ -483,7 +532,7 @@ def remove_member(
     if not workspace:
         return json_response(ResponseCode.NOT_FOUND, "Workspace not found")
 
-    if not _verify_workspace_access(workspace, x_workspace_token, authorization):
+    if not _verify_workspace_access(workspace, x_workspace_token, authorization, require_edit=True):
         return json_response(ResponseCode.UNAUTHORIZED, "Invalid credentials")
 
     member = db.execute(
@@ -529,7 +578,7 @@ def update_member(
     if not workspace:
         return json_response(ResponseCode.NOT_FOUND, "Workspace not found")
 
-    if not _verify_workspace_access(workspace, x_workspace_token, authorization):
+    if not _verify_workspace_access(workspace, x_workspace_token, authorization, require_edit=True):
         return json_response(ResponseCode.UNAUTHORIZED, "Invalid credentials")
 
     member = db.execute(
@@ -988,7 +1037,7 @@ def delete_workspace(
     if not workspace or workspace.status == "deleted":
         return json_response(ResponseCode.NOT_FOUND, "Workspace not found")
 
-    if not _verify_workspace_access(workspace, x_workspace_token, authorization):
+    if not _verify_workspace_access(workspace, x_workspace_token, authorization, require_edit=True):
         return json_response(ResponseCode.UNAUTHORIZED, "Invalid credentials")
 
     workspace.status = "deleted"
@@ -1092,7 +1141,7 @@ def add_collaborator(
     ).scalar_one_or_none()
     if not workspace:
         return json_response(ResponseCode.NOT_FOUND, "Workspace not found")
-    if not _verify_workspace_access(workspace, x_workspace_token, authorization):
+    if not _verify_workspace_access(workspace, x_workspace_token, authorization, require_edit=True):
         return json_response(ResponseCode.UNAUTHORIZED, "Invalid credentials")
 
     email = body.email.strip().lower()
@@ -1150,7 +1199,7 @@ def remove_collaborator(
     ).scalar_one_or_none()
     if not workspace:
         return json_response(ResponseCode.NOT_FOUND, "Workspace not found")
-    if not _verify_workspace_access(workspace, x_workspace_token, authorization):
+    if not _verify_workspace_access(workspace, x_workspace_token, authorization, require_edit=True):
         return json_response(ResponseCode.UNAUTHORIZED, "Invalid credentials")
 
     email_lower = email.strip().lower()

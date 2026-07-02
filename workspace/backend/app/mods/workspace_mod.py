@@ -19,6 +19,7 @@ from datetime import datetime, timezone
 from typing import List, Optional
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 
 from openagents.core.onm_events import Event, WorkspaceEventTypes
 from openagents.core.onm_mods import EventRejected, PipelineContext, TransformMod
@@ -122,7 +123,32 @@ async def _handle_agent_join(event: Event, ctx: PipelineContext) -> Optional[Eve
             session_id=new_session_id,
             session_started_at=now,
         )
-        db.add(member)
+        try:
+            # SAVEPOINT so a concurrent join racing on the same (workspace,
+            # agent_name) PK doesn't 500 — on conflict we fall through to
+            # updating the row the other request just inserted.
+            with db.begin_nested():
+                db.add(member)
+                db.flush()
+        except IntegrityError:
+            existing = db.execute(
+                select(WorkspaceMember).where(
+                    WorkspaceMember.workspace_id == workspace.id,
+                    WorkspaceMember.agent_name == agent_name,
+                )
+            ).scalar_one()
+            existing.status = "online"
+            existing.last_heartbeat = now
+            existing.session_id = new_session_id
+            existing.session_started_at = now
+            if agent_type and not existing.agent_type:
+                existing.agent_type = agent_type
+            if role_id and not existing.role_id:
+                existing.role_id = role_id
+            if server_host:
+                existing.server_host = server_host
+            if working_dir:
+                existing.working_dir = working_dir
 
     workspace.last_activity_at = now
     db.flush()
@@ -180,6 +206,17 @@ async def _handle_agent_leave(event: Event, ctx: PipelineContext) -> Optional[Ev
     if not agent_name:
         return None
 
+    # If the client sent a session_id, only honor the leave when it still
+    # matches the current session. A stale/superseded adapter shutting down
+    # late would otherwise mark the newer live session offline.
+    claimed_session = (event.payload or {}).get("session_id")
+    if _validate_session(db, workspace.id, agent_name, claimed_session) == "session_revoked":
+        logger.info(
+            "workspace_mod: ignored leave for %s in %s (stale session_id)",
+            agent_name, workspace.id,
+        )
+        return None
+
     member = db.execute(
         select(WorkspaceMember).where(
             WorkspaceMember.workspace_id == workspace.id,
@@ -222,13 +259,16 @@ async def _handle_agent_remove(event: Event, ctx: PipelineContext) -> Optional[E
 
     new_master_name = None
 
-    # If removed agent was master, promote the next available agent
+    # If removed agent was master, promote the next available agent.
+    # limit(1) + first(): after deleting the master there may be several
+    # remaining members, and scalar_one_or_none() would raise
+    # MultipleResultsFound (→ 500, member never deleted) in that case.
     if was_master:
         next_master = db.execute(
             select(WorkspaceMember).where(
                 WorkspaceMember.workspace_id == workspace.id,
-            ).order_by(WorkspaceMember.joined_at.asc())
-        ).scalar_one_or_none()
+            ).order_by(WorkspaceMember.joined_at.asc()).limit(1)
+        ).scalars().first()
 
         if next_master:
             next_master.role = "master"
@@ -935,6 +975,13 @@ def _upsert_human_collaborator(workspace, payload: dict, db) -> None:
     from the event payload (web/Swift clients pass them on every human
     chat post); does nothing if the email is missing — older clients
     that don't yet identify themselves can't be mention-pushed.
+
+    SECURITY: `sender_email` is client-reported and NOT verified here, so
+    these rows are registered with role="guest" — a push-roster entry only,
+    NOT an access grant. AuthMod/_verify_workspace_access only honour invited
+    editors/viewers, so a caller can't self-grant access by posting a message
+    with someone else's email. Deliberate invites (add_collaborator) still set
+    editor/viewer and are the only auth-granting path.
     """
     email = (payload.get("sender_email") or "").strip().lower()
     if not email:
@@ -949,7 +996,8 @@ def _upsert_human_collaborator(workspace, payload: dict, db) -> None:
     ).scalar_one_or_none()
     if existing:
         # Keep display_name fresh in case the user renamed their Google
-        # profile since last post.
+        # profile since last post. Never touch role — an invited editor/viewer
+        # must not be downgraded to guest just because they posted a message.
         if display_name and existing.display_name != display_name:
             existing.display_name = display_name
         return
@@ -957,7 +1005,7 @@ def _upsert_human_collaborator(workspace, payload: dict, db) -> None:
         workspace_id=str(workspace.id),
         email=email,
         display_name=display_name,
-        role="editor",
+        role="guest",
         added_by=email,
     ))
     db.flush()
@@ -989,6 +1037,10 @@ def _join_channel_as_human(channel, payload: dict, db) -> None:
 
 def _auto_title_channel(channel, content: str, db) -> None:
     """Set channel title from message content if still using a default title."""
+    # Respect an explicit manual title even when it happens to equal a default
+    # string like "New Thread" — the dedicated flag is the source of truth.
+    if getattr(channel, "title_manually_set", False):
+        return
     if channel.title not in _DEFAULT_TITLES:
         return
     if not content or not content.strip():

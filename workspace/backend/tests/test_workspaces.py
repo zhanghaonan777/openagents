@@ -243,24 +243,29 @@ class TestListWorkspaces:
         assert resp.status_code == 200
         assert resp.json()["data"] == []
 
-    def test_list_returns_workspaces(self, client, workspace):
-        """Workspaces appear in list when scoped by a filter."""
-        resp = client.get("/v1/workspaces", params={"agent_name": "agent-alpha"})
-        assert len(resp.json()["data"]) >= 1
+    def test_list_returns_owner_workspaces(self, client, workspace):
+        """The authenticated owner sees their own workspaces."""
+        from unittest.mock import patch
+        with patch("app.firebase_auth.verify_firebase_token", return_value="test@example.com"):
+            resp = client.get("/v1/workspaces", headers={"Authorization": "Bearer owner-token"})
+        assert resp.status_code == 200
+        ids = [w["workspaceId"] for w in resp.json()["data"]]
+        assert workspace["id"] in ids
 
-    def test_list_without_filter_returns_empty(self, client, workspace):
-        """Unfiltered list must NOT enumerate every workspace (no global leak)."""
-        resp = client.get("/v1/workspaces")
+    def test_list_without_bearer_returns_empty(self, client, workspace):
+        """Without a bearer token the list is empty — a client-supplied
+        creator_email must NOT let anyone enumerate another user's workspaces."""
+        resp = client.get("/v1/workspaces", params={"creator_email": "test@example.com"})
         assert resp.status_code == 200
         assert resp.json()["data"] == []
 
-    def test_list_filter_by_agent(self, client, workspace):
-        """Filter workspaces by agent membership."""
-        resp = client.get("/v1/workspaces", params={"agent_name": "agent-alpha"})
-        assert len(resp.json()["data"]) >= 1
-
-        resp2 = client.get("/v1/workspaces", params={"agent_name": "nonexistent"})
-        assert resp2.json()["data"] == []
+    def test_list_scoped_to_authenticated_owner(self, client, workspace):
+        """A different authenticated user does not see someone else's workspace."""
+        from unittest.mock import patch
+        with patch("app.firebase_auth.verify_firebase_token", return_value="other@example.com"):
+            resp = client.get("/v1/workspaces", headers={"Authorization": "Bearer other-token"})
+        assert resp.status_code == 200
+        assert workspace["id"] not in [w["workspaceId"] for w in resp.json()["data"]]
 
 
 class TestRotateToken:

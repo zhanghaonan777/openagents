@@ -54,6 +54,7 @@ class JoinRequest(BaseModel):
 class LeaveRequest(BaseModel):
     agent_name: str
     network: str
+    session_id: Optional[str] = None  # issued by /v1/join; only leave if it still matches
 
 class RemoveRequest(BaseModel):
     agent_name: str
@@ -105,10 +106,15 @@ def _extract_bearer(authorization: Optional[str]) -> Optional[str]:
 
 
 def _verify_workspace_access(workspace, token: Optional[str], authorization: Optional[str]) -> bool:
-    """Check if the caller has access to a workspace via token, bearer owner, or collaborator."""
+    """Check if the caller has access to a workspace via token, bearer owner, or collaborator.
+
+    (Kept in sync with app.routers.workspaces._verify_workspace_access — only
+    invited editors/viewers grant access; auto-registered "guest" rows don't.)
+    """
+    import secrets as _secrets
     if not workspace.password_hash:
         return True
-    if token and token == workspace.password_hash:
+    if token and _secrets.compare_digest(token, workspace.password_hash):
         return True
     bearer = _extract_bearer(authorization)
     if bearer:
@@ -119,8 +125,11 @@ def _verify_workspace_access(workspace, token: Optional[str], authorization: Opt
             # Owner check
             if workspace.creator_email and email_lower == workspace.creator_email.lower():
                 return True
-            # Collaborator check (loaded via selectin)
-            if any(c.email == email_lower for c in (workspace.collaborators or [])):
+            # Collaborator check — only invited editors/viewers, never guests.
+            if any(
+                c.email == email_lower and c.role in ("editor", "viewer")
+                for c in (workspace.collaborators or [])
+            ):
                 return True
     return False
 
@@ -218,11 +227,18 @@ def join_network(
 def leave_network(
     body: LeaveRequest,
     db: Session = Depends(get_db),
+    x_workspace_token: Optional[str] = Header(None),
+    authorization: Optional[str] = Header(None),
 ):
     """Agent announces departure from a network."""
     workspace = _resolve_workspace(db, body.network)
     if not workspace:
         return json_response(ResponseCode.NOT_FOUND, "Network not found")
+
+    # Require the workspace token — otherwise anyone who knows the (non-secret)
+    # slug could force-offline any agent (DoS). The launcher sends it.
+    if not _verify_workspace_access(workspace, x_workspace_token, authorization):
+        return json_response(ResponseCode.UNAUTHORIZED, "Invalid credentials")
 
     event = Event(
         type="network.agent.leave",
@@ -230,10 +246,12 @@ def leave_network(
         target="core",
         payload={
             "agent_name": body.agent_name,
+            "session_id": body.session_id,
         },
     )
 
-    # Pass workspace token since leave doesn't carry one — already authenticated by knowing the network
+    # Internal emit: caller already authenticated above; reuse the workspace
+    # token to pass the pipeline's auth mod.
     result = _emit_event_blocking(event, workspace, db, token=workspace.password_hash)
     if result is None:
         return json_response(ResponseCode.NOT_FOUND, "Agent not in network")
@@ -287,11 +305,17 @@ def remove_agent(
 def heartbeat(
     body: HeartbeatRequest,
     db: Session = Depends(get_db),
+    x_workspace_token: Optional[str] = Header(None),
+    authorization: Optional[str] = Header(None),
 ):
     """Agent presence heartbeat."""
     workspace = _resolve_workspace(db, body.network)
     if not workspace:
         return json_response(ResponseCode.NOT_FOUND, "Network not found")
+
+    # Require the workspace token so presence can't be forged by slug alone.
+    if not _verify_workspace_access(workspace, x_workspace_token, authorization):
+        return json_response(ResponseCode.UNAUTHORIZED, "Invalid credentials")
 
     event = Event(
         type="network.ping",

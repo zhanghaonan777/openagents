@@ -212,14 +212,28 @@ class TestWorkspaceClaim:
         ws = _create_workspace(client, name="Unclaimed WS", agent_name="bot")
         ws_id = ws["workspaceId"]
 
+        # Claiming an unclaimed workspace requires proof of access (the token).
         with _mock_firebase_verify("claimer@example.com"):
             resp = client.post(
                 f"/v1/workspaces/{ws_id}/claim",
-                headers={"Authorization": "Bearer claim-token"},
+                headers={
+                    "Authorization": "Bearer claim-token",
+                    "X-Workspace-Token": ws["token"],
+                },
             )
         assert resp.status_code == 200
         data = resp.json()["data"]
         assert data["creatorEmail"] == "claimer@example.com"
+
+    def test_claim_unclaimed_without_token_rejected(self, client):
+        """Claiming an unclaimed workspace with only a bearer (no token) is unauthorized."""
+        ws = _create_workspace(client, name="Unclaimed WS2", agent_name="bot")
+        with _mock_firebase_verify("claimer@example.com"):
+            resp = client.post(
+                f"/v1/workspaces/{ws['workspaceId']}/claim",
+                headers={"Authorization": "Bearer claim-token"},
+            )
+        assert resp.status_code == 401
 
     def test_claim_already_owned_by_same_user(self, client, workspace):
         """Re-claiming by the same owner succeeds (idempotent)."""
@@ -269,11 +283,14 @@ class TestWorkspaceClaim:
         ws = _create_workspace(client, name="Claimable", agent_name="bot")
         ws_id = ws["workspaceId"]
 
-        # Claim
+        # Claim (unclaimed → needs the workspace token as proof of access)
         with _mock_firebase_verify("owner@example.com"):
             client.post(
                 f"/v1/workspaces/{ws_id}/claim",
-                headers={"Authorization": "Bearer claim-token"},
+                headers={
+                    "Authorization": "Bearer claim-token",
+                    "X-Workspace-Token": ws["token"],
+                },
             )
 
         # Now use bearer auth to rotate token (a protected action)
@@ -469,14 +486,14 @@ class TestSessionLifecycle:
         # 3. Heartbeat
         resp = client.post("/v1/heartbeat", json={
             "agent_name": agent, "network": network,
-        })
+        }, headers={"X-Workspace-Token": token})
         assert resp.status_code == 200
         assert resp.json()["data"]["status"] == "online"
 
         # 4. Leave
         resp = client.post("/v1/leave", json={
             "agent_name": agent, "network": network,
-        })
+        }, headers={"X-Workspace-Token": token})
         assert resp.status_code == 200
         assert resp.json()["data"]["status"] == "offline"
 
@@ -530,7 +547,7 @@ class TestSessionLifecycle:
         client.post("/v1/leave", json={
             "agent_name": "agent-leaver",
             "network": workspace["id"],
-        })
+        }, headers={"X-Workspace-Token": workspace["token"]})
 
         resp = client.get("/v1/events", params={
             "network": workspace["id"],
@@ -554,7 +571,7 @@ class TestSessionLifecycle:
         resp = client.post("/v1/heartbeat", json={
             "agent_name": "agent-pinger",
             "network": workspace["id"],
-        })
+        }, headers={"X-Workspace-Token": workspace["token"]})
         assert resp.json()["data"]["status"] == "online"
 
         roster = client.get("/v1/discover", params={
